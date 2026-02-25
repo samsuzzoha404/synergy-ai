@@ -19,6 +19,7 @@ Run locally:
   uvicorn main:app --reload --port 8000
 """
 
+import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -183,7 +184,7 @@ def health_check() -> Dict[str, str]:
     tags=["Leads"],
     summary="Ingest a new lead and trigger AI analysis",
 )
-def create_lead(payload: LeadCreate) -> LeadResponse:
+async def create_lead(payload: LeadCreate) -> LeadResponse:
     """
     The primary ingestion endpoint. Executes the full AI pipeline:
 
@@ -202,9 +203,11 @@ def create_lead(payload: LeadCreate) -> LeadResponse:
     logger.info("New lead ingestion — project='%s'", payload.project_name)
 
     # --- Step 1: Generate semantic embedding ---
+    # asyncio.to_thread() offloads the blocking OpenAI network call to a
+    # thread pool so the event loop stays free for other requests (BUG-B4).
     embedding_input = f"{payload.project_name} {payload.location}"
     try:
-        vector = ai_engine.generate_embedding(embedding_input)
+        vector = await asyncio.to_thread(ai_engine.generate_embedding, embedding_input)
     except Exception as exc:
         logger.error("Embedding generation failed: %s", exc)
         raise HTTPException(
@@ -218,7 +221,7 @@ def create_lead(payload: LeadCreate) -> LeadResponse:
 
     # --- Step 3: AI lead analysis (GPT-4o) ---
     try:
-        ai_result = ai_engine.analyze_lead(payload.model_dump())
+        ai_result = await asyncio.to_thread(ai_engine.analyze_lead, payload.model_dump())
         ai_analysis = AIAnalysis(
             top_match_bu=ai_result["top_match_bu"],
             match_score=int(ai_result["match_score"]),
@@ -276,7 +279,7 @@ def create_lead(payload: LeadCreate) -> LeadResponse:
     tags=["Leads"],
     summary="Fetch all leads sorted by most recently ingested",
 )
-def get_leads() -> List[LeadResponse]:
+async def get_leads() -> List[LeadResponse]:
     """
     Returns all leads from Cosmos DB, sorted newest-first (via Cosmos query).
     The raw vector field is stripped from each response for payload efficiency.
@@ -285,7 +288,7 @@ def get_leads() -> List[LeadResponse]:
         List[LeadResponse] — all enriched lead documents.
     """
     try:
-        raw_leads = database.get_all_leads()
+        raw_leads = await asyncio.to_thread(database.get_all_leads)
     except Exception as exc:
         logger.error("Failed to fetch leads from CosmosDB: %s", exc)
         raise HTTPException(

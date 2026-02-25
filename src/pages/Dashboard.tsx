@@ -17,6 +17,14 @@ import type { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { useLeads } from "@/hooks/useLeads";
 
+// Dynamic time-of-day greeting helper
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 function formatCurrency(value: number) {
   if (value >= 1_000_000_000) return `RM ${(value / 1_000_000_000).toFixed(1)}B`;
   if (value >= 1_000_000) return `RM ${(value / 1_000_000).toFixed(0)}M`;
@@ -74,11 +82,25 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { data: leads = mockLeads } = useLeads();
 
+  // ── Dynamic KPI Computation ─────────────────────────────────────────────
+  // 1. Total Leads: live count from merged mock + API leads
+  const totalLeadsCount = leads.length;
+
+  // 2. Synergy Potential: sum of value for leads that have a cross-sell bundle
+  const synergyPotentialValue = leads
+    .filter((l) => l.crossSell && l.crossSell.length > 0)
+    .reduce((sum, l) => sum + l.value, 0);
+
+  // 3. Pending Actions: leads requiring attention
+  const pendingCount = leads.filter(
+    (l) => l.status === "Under Review" || l.status === "New"
+  ).length;
+
   const kpis = [
     {
       label: kpiData.totalLeads.label,
       sublabel: kpiData.totalLeads.sublabel,
-      value: kpiData.totalLeads.value.toLocaleString(),
+      value: totalLeadsCount.toLocaleString(),
       trend: kpiData.totalLeads.trend,
       icon: <Users className="w-4 h-4 text-white" />,
       accent: "bg-primary",
@@ -86,7 +108,7 @@ export default function Dashboard() {
     {
       label: kpiData.synergyPotential.label,
       sublabel: kpiData.synergyPotential.sublabel,
-      value: formatCurrency(kpiData.synergyPotential.value),
+      value: formatCurrency(synergyPotentialValue),
       trend: kpiData.synergyPotential.trend,
       icon: <Target className="w-4 h-4 text-white" />,
       accent: "bg-success",
@@ -102,7 +124,7 @@ export default function Dashboard() {
     {
       label: kpiData.pendingActions.label,
       sublabel: kpiData.pendingActions.sublabel,
-      value: kpiData.pendingActions.value.toString(),
+      value: pendingCount.toString(),
       trend: kpiData.pendingActions.trend,
       icon: <AlertCircle className="w-4 h-4 text-white" />,
       accent: "bg-warning",
@@ -119,7 +141,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-foreground">Executive Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Good morning, Marvis — Q2 2025 Synergy overview
+              {getGreeting()}, Marvis — Q2 2025 Synergy overview
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">

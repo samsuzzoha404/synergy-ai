@@ -54,6 +54,14 @@ EMBEDDING_DEPLOYMENT: str = os.environ.get(
 )
 EMBEDDING_API_VERSION: str = os.environ.get("AZURE_EMBEDDING_API_VERSION", "2023-05-15")
 
+# Singleton embedding client — uses the embedding-specific API version.
+# Created once at module load (BUG-B5: avoids a new TCP handshake per request).
+_embedding_client = AzureOpenAI(
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    api_version=EMBEDDING_API_VERSION,
+)
+
 # ---------------------------------------------------------------------------
 # Chin Hin Group Tribal Knowledge — System Prompt
 # This is the core IP of the AI CRM. It encodes organisational context
@@ -140,17 +148,11 @@ def generate_embedding(text: str) -> List[float]:
     Raises:
         openai.OpenAIError: On API failure (network, quota, auth).
     """
-    # Embeddings use a different API version; create a scoped client.
-    embedding_client = AzureOpenAI(
-        azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-        api_key=os.environ["AZURE_OPENAI_API_KEY"],
-        api_version=EMBEDDING_API_VERSION,
-    )
-
+    # Reuse the module-level singleton (BUG-B5 fix: no new TCP handshake per call).
     logger.info("Generating embedding for text: '%s'", text[:80])
 
     try:
-        response = embedding_client.embeddings.create(
+        response = _embedding_client.embeddings.create(
             model=EMBEDDING_DEPLOYMENT,
             input=text.strip(),
         )

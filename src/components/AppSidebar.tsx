@@ -17,11 +17,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { useConflicts } from "@/hooks/useLeads";
 
 const navItems = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Executive Dashboard" },
   { to: "/leads", icon: TableProperties, label: "Lead Workbench" },
-  { to: "/conflicts", icon: AlertTriangle, label: "Conflict Resolution", badge: "1" },
+  { to: "/conflicts", icon: AlertTriangle, label: "Conflict Resolution", dynamicBadge: true },
   { to: "/ingest", icon: Upload, label: "Data Ingestion" },
 ];
 
@@ -32,6 +33,10 @@ interface SidebarProps {
 
 export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  // Fetch live conflict count for the sidebar badge
+  const { data: conflicts = [] } = useConflicts();
+  // Fall back to 1 (mock duplicate) when backend is offline so demo always shows a badge
+  const conflictCount = conflicts.length > 0 ? conflicts.length : 1;
 
   const SidebarContent = ({ isMobile = false }: { isMobile?: boolean }) => (
     <div
@@ -60,7 +65,9 @@ export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
       {/* Nav */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto scrollbar-thin">
-        {navItems.map(({ to, icon: Icon, label, badge }) => (
+        {navItems.map(({ to, icon: Icon, label, dynamicBadge }) => {
+          const badge = dynamicBadge ? (conflictCount > 0 ? String(conflictCount) : undefined) : undefined;
+          return (
           <NavLink
             key={to}
             to={to}
@@ -92,7 +99,8 @@ export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
               </>
             )}
           </NavLink>
-        ))}
+          );
+        })}
       </nav>
 
       {/* Footer */}

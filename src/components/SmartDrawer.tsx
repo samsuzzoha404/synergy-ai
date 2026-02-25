@@ -47,7 +47,16 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   };
 
   const topBU = lead?.matches[0]?.bu;
-  const contact = topBU ? BU_CONTACTS[topBU] : null;
+  // Partial matching: handles cases where the AI returns "Stucken AAC" but
+  // the key in BU_CONTACTS is "Stucken" (BUG-F6).
+  const contact = topBU
+    ? BU_CONTACTS[topBU] ??
+      Object.entries(BU_CONTACTS).find(
+        ([key]) => topBU.toLowerCase().includes(key.toLowerCase()) ||
+                   key.toLowerCase().includes(topBU.toLowerCase())
+      )?.[1] ??
+      null
+    : null;
 
   return (
     <AnimatePresence>

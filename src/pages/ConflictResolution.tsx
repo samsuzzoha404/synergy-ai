@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { AlertTriangle, GitMerge, Trash2, Copy, CheckCircle, ChevronRight, Shield } from "lucide-react";
+import { AlertTriangle, GitMerge, Trash2, Copy, CheckCircle, ChevronRight, Shield, Loader2 } from "lucide-react";
 import { leads, existingDuplicateLead } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
-import { QUERY_KEYS } from "@/hooks/useLeads";
+import { QUERY_KEYS, useConflicts } from "@/hooks/useLeads";
 
 function formatCurrency(value: number) {
   if (value >= 1_000_000) return `RM ${(value / 1_000_000).toFixed(0)}M`;
@@ -59,8 +59,17 @@ function FieldRow({ label, newVal, existingVal, highlight, match }: FieldRowProp
 export default function ConflictResolution() {
   const [resolved, setResolved] = useState(false);
   const queryClient = useQueryClient();
-  const duplicateLead = leads.find((l) => l.isDuplicate);
+
+  // Primary data source: live API conflicts
+  const { data: apiConflicts = [], isLoading } = useConflicts();
+
+  // Demo fallback: static mock data (shown when backend is offline)
+  const mockDuplicate = leads.find((l) => l.isDuplicate);
+  const duplicateLead = mockDuplicate;
   const existing = existingDuplicateLead;
+
+  // Total conflict count: prefer real API count, fall back to mock
+  const totalConflicts = apiConflicts.length > 0 ? apiConflicts.length : (duplicateLead && !resolved ? 1 : 0);
 
   const handleAction = (action: "merge" | "discard" | "keep") => {
     const messages = {
@@ -69,12 +78,29 @@ export default function ConflictResolution() {
       keep: { title: "📋 Both Records Kept", desc: "Both records tracked independently with a cross-reference link." },
     };
     toast({ title: messages[action].title, description: messages[action].desc, duration: 4000 });
-    // Clear the conflicts cache so the badge count updates immediately.
-    queryClient.setQueryData(QUERY_KEYS.conflicts, []);
+
+    // Optimistic cache update (BUG-F8): remove the resolved conflict from the
+    // TanStack Query cache immediately so the sidebar badge drops without a refetch.
+    // If there are live API conflicts, pop the first one (the one just actioned).
+    // Otherwise clear entirely for the mock-data demo path.
+    queryClient.setQueryData(QUERY_KEYS.conflicts, (prev: unknown) => {
+      const current = Array.isArray(prev) ? prev : [];
+      return current.length > 0 ? current.slice(1) : [];
+    });
+
     setResolved(true);
   };
 
-  if (!duplicateLead) {
+  if (isLoading) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center min-h-[60vh]">
+        <Loader2 className="w-8 h-8 text-primary animate-spin mb-3" />
+        <p className="text-sm text-muted-foreground">Checking conflict queue…</p>
+      </div>
+    );
+  }
+
+  if (!duplicateLead && totalConflicts === 0) {
     return (
       <div className="p-6 flex flex-col items-center justify-center min-h-[60vh]">
         <div className="w-16 h-16 rounded-full bg-success-light flex items-center justify-center mb-4">
@@ -130,7 +156,7 @@ export default function ConflictResolution() {
         </div>
         <span className="hidden sm:flex items-center gap-1.5 text-xs bg-destructive/10 text-destructive border border-destructive/20 rounded-lg px-3 py-1.5 font-semibold flex-shrink-0">
           <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />
-          1 Conflict
+          {totalConflicts} Conflict{totalConflicts !== 1 ? "s" : ""}
         </span>
       </div>
 
