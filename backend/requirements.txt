@@ -1,0 +1,26 @@
+# =============================================================================
+# Synergy Sales Genius - Python Backend Dependencies
+# Pin versions for reproducible enterprise deployments.
+# Install: pip install -r requirements.txt
+# =============================================================================
+
+# --- Web Framework ---
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# --- Data Validation ---
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# --- Azure OpenAI SDK (new unified client) ---
+openai==1.57.0
+
+# --- Azure Cosmos DB SDK ---
+azure-cosmos==4.9.0
+
+# --- Environment & Utilities ---
+python-dotenv==1.0.1
+numpy==2.2.0        # Used for cosine similarity in duplicate detection
+
+# --- CORS & HTTP ---
+httpx==0.28.0       # Async HTTP client used internally by openai SDK

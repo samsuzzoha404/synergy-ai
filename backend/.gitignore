@@ -1,0 +1,49 @@
+# =============================================================================
+# Synergy Sales Genius — Backend .gitignore
+# =============================================================================
+
+# NEVER commit secrets or credentials
+.env
+.env.*
+!.env.example
+*.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build & dist
+dist/
+build/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Logs & server output files
+*.log
+server_out.txt
+server_err.txt
+srv2_out.txt
+srv2_err.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
