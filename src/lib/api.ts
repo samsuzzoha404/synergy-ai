@@ -60,6 +60,29 @@ export interface Conflict {
   status: string;
 }
 
+/** Partial update payload for PATCH /api/leads/{lead_id}. */
+export interface LeadUpdate {
+  stage?: string;
+  status?: string;
+}
+
+/** An activity/note entry returned by GET /api/leads/{lead_id}/activities. */
+export interface LeadActivity {
+  id: string;
+  lead_id: string;
+  user_name: string;
+  activity_type: 'Note' | 'Call' | 'Email' | 'System';
+  content: string;
+  timestamp: string;
+}
+
+/** Inbound payload for POST /api/leads/{lead_id}/activities. */
+export interface LeadActivityCreate {
+  user_name: string;
+  activity_type?: 'Note' | 'Call' | 'Email' | 'System';
+  content: string;
+}
+
 // ---------------------------------------------------------------------------
 // Axios Instance — configure base URL and default headers here
 // ---------------------------------------------------------------------------

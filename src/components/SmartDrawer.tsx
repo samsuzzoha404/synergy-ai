@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Brain, Sparkles, CheckCircle2, Building2, MapPin, DollarSign,
-  Users, Package, Calendar, Layers, Phone, Mail, Send, Clock
+  Users, Package, Calendar, Layers, Phone, Mail, Send, Clock,
+  FileText, PhoneCall, AtSign, Activity, Plus, Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
+import { useLeadActivities, useCreateActivity } from "@/hooks/useLeads";
+import type { LeadActivity } from "@/lib/api";
 
 interface SmartDrawerProps {
   lead: Lead | null;
@@ -30,7 +34,12 @@ const BU_CONTACTS: Record<string, { name: string; phone: string; email: string }
 
 export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const [assigning, setAssigning] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "contact">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "contact" | "activities">("overview");
+  const [noteText, setNoteText] = useState("");
+  const [noteType, setNoteType] = useState<"Note" | "Call" | "Email">("Note");
+
+  const { data: activities = [], isLoading: activitiesLoading } = useLeadActivities(lead?.id ?? null);
+  const { mutateAsync: createActivity, isPending: submittingNote } = useCreateActivity(lead?.id ?? "");
 
   const handleApprove = () => {
     if (!lead) return;
@@ -113,18 +122,18 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
 
             {/* Tabs */}
             <div className="flex border-b border-border flex-shrink-0 bg-card px-5">
-              {(["overview", "contact"] as const).map((tab) => (
+              {(["overview", "contact", "activities"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
                   className={cn(
-                    "px-1 py-3 text-xs font-semibold capitalize border-b-2 mr-5 transition-colors",
+                    "px-1 py-3 text-xs font-semibold capitalize border-b-2 mr-5 transition-colors whitespace-nowrap",
                     activeTab === tab
                       ? "border-primary text-primary"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {tab === "overview" ? "AI Overview" : "BU Contact"}
+                  {tab === "overview" ? "AI Synergy" : tab === "contact" ? "BU Contact" : "Activities & Notes"}
                 </button>
               ))}
             </div>
@@ -236,8 +245,8 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                     </div>
                   </div>
                 </>
-              ) : (
-                /* Contact Tab */
+              ) : activeTab === "contact" ? (
+                /* ----- Contact Tab (unchanged) ----- */
                 <div className="space-y-4">
                   <div className="bg-muted/50 rounded-xl p-4 border border-border">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Recommended BU</p>
@@ -290,6 +299,134 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                       📱 <strong className="text-foreground">SMS to {contact?.name}:</strong><br />
                       "New lead assigned: {lead.projectName} ({formatCurrency(lead.value)}) — {lead.location}. Please review and initiate contact within 24 hours. — Synergy Genius"
                     </div>
+                  </div>
+                </div>
+              ) : (
+                /* ----- Activities & Notes Tab ----- */
+                <div className="space-y-4">
+                  {/* Add Note */}
+                  <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Log Activity</p>
+
+                    {/* Activity type pills */}
+                    <div className="flex gap-2">
+                      {(["Note", "Call", "Email"] as const).map((type) => {
+                        const Icon = type === "Note" ? FileText : type === "Call" ? PhoneCall : AtSign;
+                        return (
+                          <button
+                            key={type}
+                            onClick={() => setNoteType(type)}
+                            className={cn(
+                              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all",
+                              noteType === type
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "border-border text-muted-foreground hover:border-primary/40",
+                            )}
+                          >
+                            <Icon className="w-3 h-3" />
+                            {type}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <Textarea
+                      placeholder={`Add a ${noteType.toLowerCase()}…`}
+                      value={noteText}
+                      onChange={(e) => setNoteText(e.target.value)}
+                      rows={3}
+                      className="resize-none text-sm"
+                    />
+
+                    <Button
+                      size="sm"
+                      disabled={!noteText.trim() || submittingNote}
+                      onClick={async () => {
+                        if (!noteText.trim()) return;
+                        try {
+                          await createActivity({
+                            user_name: "Sales Rep",
+                            activity_type: noteType,
+                            content: noteText.trim(),
+                          });
+                          setNoteText("");
+                          toast({ title: `✅ ${noteType} logged`, duration: 3000 });
+                        } catch {
+                          toast({ title: "Failed to save note", variant: "destructive", duration: 3000 });
+                        }
+                      }}
+                      className="w-full gradient-primary text-white font-semibold"
+                    >
+                      {submittingNote ? (
+                        <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                      ) : (
+                        <Plus className="w-3.5 h-3.5 mr-2" />
+                      )}
+                      Add {noteType}
+                    </Button>
+                  </div>
+
+                  {/* Timeline */}
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Activity Timeline</p>
+
+                    {activitiesLoading ? (
+                      <div className="flex items-center justify-center py-8 text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                        <span className="text-sm">Loading activities…</span>
+                      </div>
+                    ) : activities.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-10 text-center">
+                        <Activity className="w-8 h-8 text-muted-foreground/30 mb-3" />
+                        <p className="text-sm font-medium text-muted-foreground">No activities yet</p>
+                        <p className="text-xs text-muted-foreground/60 mt-1">Add a note above to start the conversation.</p>
+                      </div>
+                    ) : (
+                      <div className="relative pl-5 space-y-4">
+                        {/* Vertical timeline line */}
+                        <div className="absolute left-1.5 top-2 bottom-2 w-px bg-border" />
+
+                        {[...activities].reverse().map((activity) => {
+                          const Icon = activity.activity_type === "Call"
+                            ? PhoneCall
+                            : activity.activity_type === "Email"
+                            ? AtSign
+                            : activity.activity_type === "System"
+                            ? Activity
+                            : FileText;
+                          const dotColor =
+                            activity.activity_type === "Call" ? "bg-success" :
+                            activity.activity_type === "Email" ? "bg-info" :
+                            activity.activity_type === "System" ? "bg-muted-foreground" :
+                            "bg-primary";
+
+                          return (
+                            <div key={activity.id} className="relative">
+                              {/* Timeline dot */}
+                              <div className={cn("absolute -left-3.5 top-1 w-2.5 h-2.5 rounded-full border-2 border-card", dotColor)} />
+
+                              <div className="bg-muted/50 border border-border rounded-xl p-3.5">
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <Icon className="w-3 h-3 text-muted-foreground" />
+                                    <span className="text-xs font-bold text-foreground">{activity.user_name}</span>
+                                    <span className="text-xs text-muted-foreground">· {activity.activity_type}</span>
+                                  </div>
+                                  <span className="text-xs text-muted-foreground/70 flex items-center gap-1">
+                                    <Clock className="w-3 h-3" />
+                                    {new Date(activity.timestamp).toLocaleString("en-MY", {
+                                      month: "short", day: "numeric",
+                                      hour: "2-digit", minute: "2-digit",
+                                    })}
+                                  </span>
+                                </div>
+                                <p className="text-sm text-foreground leading-relaxed">{activity.content}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

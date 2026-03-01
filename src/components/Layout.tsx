@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
-import { Menu, Bell, Search, ChevronDown, Sun, Moon, Check } from "lucide-react";
+import { Menu, Bell, Search, ChevronDown, Sun, Moon, LogOut, User, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
 import { AppSidebar } from "@/components/AppSidebar";
 import { notifications } from "@/data/mockData";
@@ -10,10 +10,16 @@ import { AnimatePresence, motion } from "framer-motion";
 export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
 
   const unread = notifications.filter((n) => !n.read).length;
+
+  const handleLogout = () => {
+    setUserMenuOpen(false);
+    navigate("/auth");
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -129,17 +135,79 @@ export function Layout() {
               </AnimatePresence>
             </div>
 
-            {/* User Avatar */}
-            <button className="flex items-center gap-2 rounded-lg hover:bg-muted px-2 py-1.5 transition-colors ml-1">
-              <div className="w-7 h-7 rounded-full gradient-primary flex items-center justify-center flex-shrink-0 ring-2 ring-primary/20">
-                <span className="text-white text-xs font-bold">MY</span>
-              </div>
-              <div className="hidden md:block text-left">
-                <p className="text-sm font-semibold text-foreground leading-tight">Marvis Yeoh</p>
-                <p className="text-xs text-muted-foreground leading-tight">Group CFO</p>
-              </div>
-              <ChevronDown className="hidden md:block w-3.5 h-3.5 text-muted-foreground" />
-            </button>
+            {/* User Avatar with Dropdown */}
+            <div className="relative ml-1">
+              <button
+                onClick={() => { setUserMenuOpen(!userMenuOpen); setNotifOpen(false); }}
+                className="flex items-center gap-2 rounded-lg hover:bg-muted px-2 py-1.5 transition-colors"
+              >
+                <div className="w-7 h-7 rounded-full gradient-primary flex items-center justify-center flex-shrink-0 ring-2 ring-primary/20">
+                  <span className="text-white text-xs font-bold">MY</span>
+                </div>
+                <div className="hidden md:block text-left">
+                  <p className="text-sm font-semibold text-foreground leading-tight">Marvis Yeoh</p>
+                  <p className="text-xs text-muted-foreground leading-tight">Group CFO</p>
+                </div>
+                <ChevronDown className={cn("hidden md:block w-3.5 h-3.5 text-muted-foreground transition-transform duration-200", userMenuOpen && "rotate-180")} />
+              </button>
+
+              <AnimatePresence>
+                {userMenuOpen && (
+                  <>
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="fixed inset-0 z-40"
+                      onClick={() => setUserMenuOpen(false)}
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute right-0 top-full mt-2 w-56 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+                    >
+                      {/* User info header */}
+                      <div className="px-4 py-3 border-b border-border">
+                        <p className="text-sm font-semibold text-foreground">Marvis Yeoh</p>
+                        <p className="text-xs text-muted-foreground">marvis.yeoh@chinhin.com</p>
+                        <span className="inline-block mt-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">Group CFO</span>
+                      </div>
+
+                      {/* Menu items */}
+                      <div className="p-1.5">
+                        <button
+                          onClick={() => setUserMenuOpen(false)}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                        >
+                          <User className="w-4 h-4" />
+                          Profile
+                        </button>
+                        <button
+                          onClick={() => setUserMenuOpen(false)}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                        >
+                          <Settings className="w-4 h-4" />
+                          Settings
+                        </button>
+                      </div>
+
+                      {/* Logout */}
+                      <div className="p-1.5 border-t border-border">
+                        <button
+                          onClick={handleLogout}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm text-destructive hover:bg-destructive/10 transition-colors font-medium"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          Log Out
+                        </button>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </header>
 

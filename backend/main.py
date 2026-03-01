@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import ai_engine
 import database
-from models import AIAnalysis, LeadCreate, LeadDB, LeadResponse
+from models import AIAnalysis, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at startup
@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 # Structure: List of {"id": str, "vector": List[float]}
 # ---------------------------------------------------------------------------
 _vector_cache: List[Dict[str, Any]] = []
+
+# In-memory activities store: { lead_id -> List[LeadActivity] }
+# In production: replace with Cosmos DB 'Activities' container.
+_activities_store: Dict[str, List[Dict[str, Any]]] = {}
 
 DUPLICATE_SIMILARITY_THRESHOLD = 0.92  # Cosine similarity ≥ 0.92 → flag as duplicate
 
@@ -334,6 +338,110 @@ def get_conflicts() -> List[Dict[str, Any]]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database read error: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/leads/{lead_id} — Update a lead's stage (Kanban board DnD)
+# ---------------------------------------------------------------------------
+@app.patch(
+    "/api/leads/{lead_id}",
+    response_model=LeadResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Leads"],
+    summary="Partially update a lead (stage, status)",
+)
+async def patch_lead(lead_id: str, payload: LeadUpdate) -> LeadResponse:
+    """
+    Applies a partial update to a persisted lead document.
+    Primarily used by the Kanban board to move a lead between pipeline stages.
+
+    Only fields explicitly set in the payload are modified; all others are unchanged.
+    """
+    try:
+        all_docs = await asyncio.to_thread(database.get_all_leads)
+    except Exception as exc:
+        logger.error("Failed to fetch leads for PATCH: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database read error: {exc}",
+        )
+
+    target_doc = next((d for d in all_docs if d.get("id") == lead_id), None)
+    if target_doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lead '{lead_id}' not found.",
+        )
+
+    # Apply only the provided (non-None) fields
+    update_data = payload.model_dump(exclude_none=True)
+    target_doc.update(update_data)
+
+    try:
+        database.save_lead(target_doc)  # upsert in Cosmos DB
+    except Exception as exc:
+        logger.error("Failed to update lead '%s': %s", lead_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database write error: {exc}",
+        )
+
+    lead = LeadDB(**{k: v for k, v in target_doc.items() if not k.startswith("_")})
+    logger.info("Lead '%s' updated — changes: %s", lead_id, update_data)
+    return LeadResponse.from_lead_db(lead)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/leads/{lead_id}/activities — Fetch activity timeline for a lead
+# ---------------------------------------------------------------------------
+@app.get(
+    "/api/leads/{lead_id}/activities",
+    response_model=List[LeadActivity],
+    status_code=status.HTTP_200_OK,
+    tags=["Activities"],
+    summary="Fetch the activity/notes timeline for a specific lead",
+)
+def get_activities(lead_id: str) -> List[LeadActivity]:
+    """
+    Returns all logged activities (notes, calls, emails, system events) for a lead,
+    sorted with the most recent entry last so the frontend timeline reads top-to-bottom.
+    """
+    raw = _activities_store.get(lead_id, [])
+    return [LeadActivity(**a) for a in raw]
+
+
+# ---------------------------------------------------------------------------
+# POST /api/leads/{lead_id}/activities — Add a note/activity to a lead
+# ---------------------------------------------------------------------------
+@app.post(
+    "/api/leads/{lead_id}/activities",
+    response_model=LeadActivity,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Activities"],
+    summary="Log a new activity or note against a lead",
+)
+def create_activity(lead_id: str, payload: LeadActivityCreate) -> LeadActivity:
+    """
+    Appends a new activity to the in-memory activity log for the given lead.
+    The system auto-stamps the UTC timestamp and generates a UUID for the entry.
+
+    In production, persist to a Cosmos DB 'Activities' container
+    partitioned by lead_id for efficient per-lead retrieval.
+    """
+    new_activity = LeadActivity(
+        lead_id=lead_id,
+        user_name=payload.user_name,
+        activity_type=payload.activity_type,
+        content=payload.content,
+    )
+    if lead_id not in _activities_store:
+        _activities_store[lead_id] = []
+    _activities_store[lead_id].append(new_activity.model_dump())
+    logger.info(
+        "Activity logged — lead='%s' type='%s' user='%s'",
+        lead_id, new_activity.activity_type, new_activity.user_name,
+    )
+    return new_activity
 
 
 # NOTE: Startup logic has been moved to the `lifespan` context manager above.

@@ -141,7 +141,85 @@ class LeadDB(LeadCreate):
 
 
 # ---------------------------------------------------------------------------
-# 4. API Response wrapper (clean envelope for the frontend)
+# 4. Partial Update Schema (PATCH /api/leads/{lead_id})
+# ---------------------------------------------------------------------------
+class LeadUpdate(BaseModel):
+    """
+    Allows partial updates to a persisted lead document.
+    Currently used by the Kanban board to drag-and-drop stage changes.
+    All fields are Optional — only provided fields are changed.
+    """
+
+    stage: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="New pipeline stage (e.g., Planning → Tender).",
+        examples=["Tender"],
+    )
+    status: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="New workflow status (New | Under Review | Assigned | Closed).",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. Lead Activity / Notes (in-memory for MVP; swap to Cosmos DB later)
+# ---------------------------------------------------------------------------
+class ActivityType(str):
+    NOTE = "Note"
+    CALL = "Call"
+    EMAIL = "Email"
+    SYSTEM = "System"
+
+
+class LeadActivity(BaseModel):
+    """
+    A timestamped event tied to a specific lead.
+    Rendered in the SmartDrawer 'Activities & Notes' timeline.
+    """
+
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique activity identifier.",
+    )
+    lead_id: str = Field(
+        ...,
+        description="Foreign key — the lead this activity belongs to.",
+    )
+    user_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Display name of the user who logged the activity.",
+        examples=["Ahmad Razif"],
+    )
+    activity_type: str = Field(
+        default="Note",
+        description="One of: Note | Call | Email | System.",
+        examples=["Note"],
+    )
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="Free-text body of the activity (note, call summary, etc.).",
+    )
+    timestamp: str = Field(
+        default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+        description="ISO-8601 UTC timestamp of when the activity was logged.",
+    )
+
+
+class LeadActivityCreate(BaseModel):
+    """Inbound payload for POST /api/leads/{lead_id}/activities."""
+
+    user_name: str = Field(..., min_length=1, max_length=128, examples=["Ahmad Razif"])
+    activity_type: str = Field(default="Note", examples=["Note"])
+    content: str = Field(..., min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# 6. API Response wrapper (clean envelope for the frontend)
 # ---------------------------------------------------------------------------
 class LeadResponse(BaseModel):
     """

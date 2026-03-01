@@ -16,7 +16,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient, type Conflict, type Lead as APILead, type LeadCreate } from '@/lib/api';
+import { apiClient, type Conflict, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
 import { leads as mockLeads, type Lead } from '@/data/mockData';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ import { leads as mockLeads, type Lead } from '@/data/mockData';
 export const QUERY_KEYS = {
   leads: ['leads'] as const,
   conflicts: ['conflicts'] as const,
+  activities: (leadId: string) => ['activities', leadId] as const,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -156,5 +157,82 @@ export function useConflicts() {
 
     refetchInterval: 120_000,
     staleTime: 60_000,
+  });
+}
+
+// ===========================================================================
+// HOOK 4: useUpdateLeadStage — PATCH a lead's pipeline stage (Kanban DnD)
+// ===========================================================================
+
+/**
+ * Mutation hook to move a lead to a new pipeline stage via the Kanban board.
+ * On success, invalidates the 'leads' query so all views stay in sync.
+ *
+ * @example
+ *   const { mutate: moveStage } = useUpdateLeadStage();
+ *   moveStage({ leadId: 'L001', stage: 'Tender' });
+ */
+export function useUpdateLeadStage() {
+  const queryClient = useQueryClient();
+
+  return useMutation<APILead, Error, { leadId: string; update: LeadUpdate }>({
+    mutationFn: async ({ leadId, update }) => {
+      const response = await apiClient.patch<APILead>(`/api/leads/${leadId}`, update);
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+    },
+  });
+}
+
+// ===========================================================================
+// HOOK 5: useLeadActivities — Fetch the activity timeline for a single lead
+// ===========================================================================
+
+/**
+ * Fetches all activities/notes logged against a specific lead.
+ *
+ * @example
+ *   const { data: activities = [] } = useLeadActivities(lead.id);
+ */
+export function useLeadActivities(leadId: string | null) {
+  return useQuery<LeadActivity[], Error>({
+    queryKey: QUERY_KEYS.activities(leadId ?? ''),
+    enabled: !!leadId,
+    queryFn: async (): Promise<LeadActivity[]> => {
+      const response = await apiClient.get<LeadActivity[]>(`/api/leads/${leadId}/activities`);
+      return response.data;
+    },
+    staleTime: 15_000,
+  });
+}
+
+// ===========================================================================
+// HOOK 6: useCreateActivity — POST a new note/activity to a lead
+// ===========================================================================
+
+/**
+ * Mutation hook to log a new activity against a lead.
+ * Invalidates the activities query for that lead on success.
+ *
+ * @example
+ *   const { mutateAsync: addNote } = useCreateActivity(lead.id);
+ *   addNote({ user_name: 'Ahmad', activity_type: 'Note', content: 'Called client.' });
+ */
+export function useCreateActivity(leadId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation<LeadActivity, Error, LeadActivityCreate>({
+    mutationFn: async (payload) => {
+      const response = await apiClient.post<LeadActivity>(
+        `/api/leads/${leadId}/activities`,
+        payload,
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.activities(leadId) });
+    },
   });
 }
