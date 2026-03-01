@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Brain, Sparkles, CheckCircle2, Building2, MapPin, DollarSign,
@@ -41,6 +41,14 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const { data: activities = [], isLoading: activitiesLoading } = useLeadActivities(lead?.id ?? null);
   const { mutateAsync: createActivity, isPending: submittingNote } = useCreateActivity(lead?.id ?? "");
   const { data: auditLogs = [], isLoading: auditLoading } = useAuditLogs(lead?.id ?? null);
+
+  // Stable "historical projects" count per lead — deterministic from lead id
+  // to avoid re-generating on every render (T-02: no Math.random() in JSX).
+  const historicalCount = useMemo(() => {
+    if (!lead) return 43;
+    const seed = lead.id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    return 30 + (seed % 30);
+  }, [lead?.id]);
 
   const handleApprove = () => {
     if (!lead) return;
@@ -248,7 +256,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                     <p className="text-sm text-muted-foreground leading-relaxed">{lead.aiRationale}</p>
                     <div className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground/70">
                       <Clock className="w-3 h-3" />
-                      Based on {Math.floor(Math.random() * 30 + 30)} historical projects · Confidence: High · 73% acceptance rate
+                      Based on {historicalCount} historical projects · Confidence: High · 73% acceptance rate
                     </div>
                   </div>
                 </>

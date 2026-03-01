@@ -20,13 +20,15 @@ Run locally:
 """
 
 import asyncio
+import csv
+import io
 import logging
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 
 import ai_engine
@@ -39,7 +41,7 @@ from auth import (
     create_access_token,
     get_current_user,
 )
-from models import AIAnalysis, AuditLog, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
+from models import AIAnalysis, AuditLog, BulkIngestResponse, ConflictResolutionUpdate, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at startup
@@ -328,6 +330,135 @@ async def create_lead(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/leads/bulk — Bulk Ingest Leads from a CSV file
+# ---------------------------------------------------------------------------
+@app.post(
+    "/api/leads/bulk",
+    response_model=BulkIngestResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Leads"],
+    summary="Bulk ingest leads from a CSV upload (BCI export format)",
+)
+async def bulk_ingest_leads(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> BulkIngestResponse:
+    """
+    Accepts a CSV file (UTF-8 encoded) in the BCI export format.
+    Runs the full AI pipeline for each valid row:
+      1. Generate embedding → text-embedding-3-small
+      2. Duplicate check   → cosine similarity vs. cache
+      3. AI BU analysis    → GPT-4o with tribal knowledge
+      4. Persist           → Cosmos DB Leads container
+
+    Expected CSV columns (case-insensitive, order-independent):
+      Project Name | Location | GDV | Stage | Developer | GFA | Type
+
+    Returns a summary: total imported, total flagged as duplicates, errors.
+    """
+    # --- Guard: only CSV and XLSX-as-CSV files accepted ---
+    filename = file.filename or ""
+    if not (filename.lower().endswith(".csv") or filename.lower().endswith(".xlsx")):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only .csv files are supported for bulk upload. Please export your BCI data as CSV.",
+        )
+
+    raw_bytes = await file.read()
+    try:
+        content = raw_bytes.decode("utf-8-sig")  # utf-8-sig strips BOM if present
+    except UnicodeDecodeError:
+        content = raw_bytes.decode("latin-1", errors="replace")
+
+    reader = csv.DictReader(io.StringIO(content))
+
+    # Normalise headers: strip whitespace and lowercase for flexible matching
+    if reader.fieldnames is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="CSV file appears to be empty or has no header row.",
+        )
+
+    imported = 0
+    flagged = 0
+    errors: List[str] = []
+
+    for row_num, row in enumerate(reader, start=2):  # start=2: row 1 is header
+        # Normalise keys
+        norm = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+
+        project_name = (
+            norm.get("project name") or norm.get("projectname") or norm.get("name") or ""
+        )
+        location = norm.get("location") or norm.get("address") or ""
+        gdv_raw = norm.get("gdv") or norm.get("value") or norm.get("gdc") or "0"
+        stage = norm.get("stage") or "Planning"
+        project_type = norm.get("type") or norm.get("project type") or "Commercial"
+
+        # Basic validation
+        if not project_name or not location:
+            errors.append(f"Row {row_num}: Missing 'Project Name' or 'Location' — skipped.")
+            continue
+
+        # Parse GDV — strip non-numeric chars except decimal point
+        try:
+            gdv_clean = "".join(c for c in gdv_raw if c.isdigit() or c == ".")
+            value_rm = int(float(gdv_clean)) if gdv_clean else 0
+        except ValueError:
+            errors.append(f"Row {row_num}: Invalid GDV value '{gdv_raw}' — defaulting to 0.")
+            value_rm = 0
+
+        # Run AI pipeline for this row
+        try:
+            lead_payload = LeadCreate(
+                project_name=project_name,
+                location=location,
+                value_rm=value_rm,
+                project_type=project_type[:128],
+                stage=stage[:64],
+            )
+
+            embedding_input = f"{project_name} {location}"
+            vector = await asyncio.to_thread(ai_engine.generate_embedding, embedding_input)
+
+            new_id = str(uuid.uuid4())
+            is_dup = _check_duplicate(vector, new_id)
+
+            ai_result = await asyncio.to_thread(ai_engine.analyze_lead, lead_payload.model_dump())
+            ai_analysis = AIAnalysis(
+                top_match_bu=ai_result["top_match_bu"],
+                match_score=int(ai_result["match_score"]),
+                rationale=ai_result["rationale"],
+                synergy_bundle=ai_result.get("synergy_bundle", []),
+            )
+
+            lead_db = LeadDB(
+                **lead_payload.model_dump(),
+                id=new_id,
+                ai_analysis=ai_analysis,
+                is_duplicate=is_dup,
+                vector=vector,
+                status="Under Review" if is_dup else "New",
+            )
+            await asyncio.to_thread(database.save_lead, lead_db.model_dump())
+            _vector_cache.append({"id": new_id, "vector": vector})
+
+            imported += 1
+            if is_dup:
+                flagged += 1
+
+        except Exception as exc:
+            logger.warning("Bulk import — row %d error: %s", row_num, exc)
+            errors.append(f"Row {row_num} ('{project_name}'): {exc}")
+
+    logger.info(
+        "Bulk import complete — imported=%d, flagged=%d, errors=%d by '%s'",
+        imported, flagged, len(errors), current_user.email,
+    )
+    return BulkIngestResponse(imported=imported, flagged=flagged, errors=errors)
+
+
+# ---------------------------------------------------------------------------
 # GET /api/leads — Fetch All Leads for the Lead Workbench
 # ---------------------------------------------------------------------------
 @app.get(
@@ -384,10 +515,13 @@ async def get_leads(
     tags=["Conflicts"],
     summary="Fetch all duplicate conflict pairs awaiting human review",
 )
-def get_conflicts() -> List[Dict[str, Any]]:
+def get_conflicts(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[Dict[str, Any]]:
     """
     Returns all conflict documents for the ConflictResolution dashboard.
     Each document contains the two lead IDs and their similarity score.
+    Requires a valid JWT — Admin sees all; Sales_Rep sees conflicts for their BU only.
     """
     try:
         conflicts = database.get_all_conflicts()
@@ -402,7 +536,60 @@ def get_conflicts() -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# PATCH /api/leads/{lead_id} — Update a lead's stage (Kanban board DnD)
+# PATCH /api/conflicts/{conflict_id} — Resolve a duplicate conflict
+# ---------------------------------------------------------------------------
+@app.patch(
+    "/api/conflicts/{conflict_id}",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    tags=["Conflicts"],
+    summary="Resolve a conflict — Merge, Discard, or Keep Both",
+)
+async def resolve_conflict(
+    conflict_id: str,
+    payload: ConflictResolutionUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Persists the resolution decision for a duplicate conflict document.
+
+    The three possible resolution statuses are:
+      • 'Merged'    — primary record updated; incoming lead removed.
+      • 'Discarded' — incoming duplicate lead discarded; existing record retained.
+      • 'Kept Both' — both records kept with a cross-reference link.
+
+    Stamps the document with who resolved it and when.
+    """
+    update_fields = {
+        "status": payload.status,
+        "resolved_by_email": current_user.email,
+        "resolved_by_name": current_user.name,
+        "resolved_at": payload.resolved_at,
+    }
+    try:
+        updated = await asyncio.to_thread(
+            database.update_conflict, conflict_id, update_fields
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conflict '{conflict_id}' not found.",
+        )
+    except Exception as exc:
+        logger.error("Failed to resolve conflict '%s': %s", conflict_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database write error: {exc}",
+        )
+
+    logger.info(
+        "Conflict '%s' resolved as '%s' by '%s'",
+        conflict_id,
+        payload.status,
+        current_user.email,
+    )
+    return {k: v for k, v in updated.items() if not k.startswith("_")}
+
 # ---------------------------------------------------------------------------
 @app.patch(
     "/api/leads/{lead_id}",
@@ -495,10 +682,14 @@ async def patch_lead(
     tags=["Activities"],
     summary="Fetch the activity/notes timeline for a specific lead",
 )
-def get_activities(lead_id: str) -> List[LeadActivity]:
+def get_activities(
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[LeadActivity]:
     """
     Returns all logged activities (notes, calls, emails, system events) for a lead,
     sorted with the most recent entry last so the frontend timeline reads top-to-bottom.
+    Requires a valid JWT.
     """
     raw = _activities_store.get(lead_id, [])
     return [LeadActivity(**a) for a in raw]
@@ -514,17 +705,24 @@ def get_activities(lead_id: str) -> List[LeadActivity]:
     tags=["Activities"],
     summary="Log a new activity or note against a lead",
 )
-def create_activity(lead_id: str, payload: LeadActivityCreate) -> LeadActivity:
+def create_activity(
+    lead_id: str,
+    payload: LeadActivityCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LeadActivity:
     """
     Appends a new activity to the in-memory activity log for the given lead.
     The system auto-stamps the UTC timestamp and generates a UUID for the entry.
+    Stamped with the authenticated user's name from the JWT so the caller
+    cannot spoof a different user's name.
 
     In production, persist to a Cosmos DB 'Activities' container
     partitioned by lead_id for efficient per-lead retrieval.
     """
     new_activity = LeadActivity(
         lead_id=lead_id,
-        user_name=payload.user_name,
+        # Use the authenticated user's real name from JWT (overrides payload)
+        user_name=current_user.name,
         activity_type=payload.activity_type,
         content=payload.content,
     )

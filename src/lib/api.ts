@@ -58,6 +58,22 @@ export interface Conflict {
   matched_lead_id: string;
   similarity_score: number;
   status: string;
+  resolved_by_email?: string;
+  resolved_by_name?: string;
+  resolved_at?: string;
+}
+
+/** Payload sent to PATCH /api/conflicts/{id} to record a resolution decision. */
+export interface ConflictResolvePayload {
+  /** 'Merged' | 'Discarded' | 'Kept Both' */
+  status: string;
+}
+
+/** Summary returned by POST /api/leads/bulk after CSV processing. */
+export interface BulkIngestResponse {
+  imported: number;
+  flagged: number;
+  errors: string[];
 }
 
 /** Partial update payload for PATCH /api/leads/{lead_id}. */

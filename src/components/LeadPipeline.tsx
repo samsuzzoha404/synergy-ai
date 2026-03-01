@@ -8,7 +8,7 @@
  * Columns: Planning → Tender → Construction → Completed
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -191,8 +191,12 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
   const [localLeads, setLocalLeads] = useState<Lead[]>(leads);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Sync when parent data refreshes (e.g., after TanStack Query revalidation)
-  useMemo(() => setLocalLeads(leads), [leads]);
+  // Sync localLeads when parent data refreshes (e.g., after TanStack Query revalidation).
+  // Must be useEffect — setState inside useMemo is a React anti-pattern that causes
+  // extra renders and Strict Mode double-invocation warnings.
+  useEffect(() => {
+    setLocalLeads(leads);
+  }, [leads]);
 
   const activeLead = useMemo(
     () => localLeads.find((l) => l.id === activeId) ?? null,

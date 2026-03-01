@@ -156,3 +156,47 @@ def get_all_conflicts() -> List[Dict[str, Any]]:
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch conflicts: %s", exc)
         raise
+
+
+def update_conflict(conflict_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Apply a partial update to an existing conflict document (e.g., resolve it).
+
+    Reads the current document, merges the update dict in, then upserts it back.
+    This pattern is safe because conflict documents are small and low-traffic.
+
+    Args:
+        conflict_id: The 'id' (and partition key) of the conflict document.
+        updates: Dict of fields to merge in (e.g., {"status": "Merged", ...}).
+
+    Returns:
+        The updated Cosmos DB document.
+
+    Raises:
+        KeyError: If the conflict document is not found.
+        azure.cosmos.exceptions.CosmosHttpResponseError on DB failure.
+    """
+    try:
+        # Read the existing document using id as both item id and partition key
+        existing = _conflicts_container.read_item(
+            item=conflict_id,
+            partition_key=conflict_id,
+        )
+    except exceptions.CosmosResourceNotFoundError:
+        raise KeyError(f"Conflict id='{conflict_id}' not found in Cosmos DB.")
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to read conflict id='%s': %s", conflict_id, exc)
+        raise
+
+    existing.update(updates)
+    try:
+        response = _conflicts_container.upsert_item(body=existing)
+        logger.info(
+            "Conflict id='%s' updated — new status='%s'",
+            conflict_id,
+            updates.get("status"),
+        )
+        return response
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to update conflict id='%s': %s", conflict_id, exc)
+        raise

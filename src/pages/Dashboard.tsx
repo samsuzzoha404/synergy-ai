@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Users, Target, Clock, AlertCircle, BarChart3, PieChart, ArrowUpRight,
   TrendingUp, TrendingDown, Zap, CheckCircle2, AlertTriangle, Upload,
-  Package, Activity
+  Package, Activity, type LucideIcon
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -69,7 +69,7 @@ const trendData = [
   { month: "Jun", leads: 127, value: 62 },
 ];
 
-const activityIcons: Record<string, { icon: any; color: string }> = {
+const activityIcons: Record<string, { icon: LucideIcon; color: string }> = {
   assign: { icon: CheckCircle2, color: "text-success" },
   alert: { icon: AlertTriangle, color: "text-destructive" },
   new: { icon: Zap, color: "text-primary" },
@@ -130,6 +130,9 @@ export default function Dashboard() {
       accent: "bg-warning",
     },
   ];
+
+  // Sum stage totals dynamically so the legend bars always add up correctly
+  const stageTotal = projectStageData.reduce((s, d) => s + d.count, 0);
 
   const recentLeads = leads.slice(0, 5);
 
@@ -233,7 +236,7 @@ export default function Dashboard() {
                   </span>
                   <div className="flex items-center gap-2">
                     <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div className="h-full rounded-full" style={{ backgroundColor: d.color, width: `${(d.count / 842) * 100}%` }} />
+                        <div className="h-full rounded-full" style={{ backgroundColor: d.color, width: `${stageTotal > 0 ? (d.count / stageTotal) * 100 : 0}%` }} />
                     </div>
                     <span className="font-semibold text-foreground w-8 text-right">{d.count}</span>
                   </div>

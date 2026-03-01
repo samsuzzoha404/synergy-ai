@@ -16,7 +16,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient, type AuditLog, type Conflict, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
+import { apiClient, type AuditLog, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
 import { leads as mockLeads, type Lead } from '@/data/mockData';
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,26 @@ export const QUERY_KEYS = {
 // Adapter — converts a backend APILead into the frontend mock Lead shape.
 // This lets every UI component work with a single, consistent Lead type.
 // ---------------------------------------------------------------------------
+
+/**
+ * Maps the backend status string (from Cosmos DB) to a frontend LeadStatus.
+ * Backend produces: "New" | "Under Review" | "Assigned" | "Closed"
+ * Frontend expects: "New" | "In Review" | "Under Review" | "Assigned" | "Won" | "Lost" | ...
+ */
+function mapApiStatus(status: string): Lead['status'] {
+  const statusMap: Record<string, Lead['status']> = {
+    'New': 'New',
+    'Under Review': 'Under Review',
+    'Assigned': 'Assigned',
+    'Closed': 'Won',          // "Closed" from backend = "Won" on the frontend
+    'Duplicate Alert': 'Duplicate Alert',
+    'Won': 'Won',
+    'Lost': 'Lost',
+    'In Review': 'In Review',
+  };
+  return statusMap[status] ?? 'New';
+}
+
 function adaptAPILead(apiLead: APILead): Lead {
   const analysis = apiLead.ai_analysis;
   return {
@@ -43,7 +63,7 @@ function adaptAPILead(apiLead: APILead): Lead {
     value: apiLead.value_rm,
     stage: (apiLead.stage as Lead['stage']) ?? 'Planning',
     type: (apiLead.project_type as Lead['type']) ?? 'Commercial',
-    status: (apiLead.status as Lead['status']) ?? 'New',
+    status: mapApiStatus(apiLead.status),
     isDuplicate: apiLead.is_duplicate,
     developer: 'New Lead (via API)',
     createdDate: new Date().toISOString().split('T')[0],
@@ -259,5 +279,78 @@ export function useAuditLogs(leadId: string | null) {
       return response.data;
     },
     staleTime: 10_000,
+  });
+}
+
+// ===========================================================================
+// HOOK 8: useResolveConflict — PATCH /api/conflicts/{id}
+// ===========================================================================
+
+/**
+ * Mutation hook to resolve a duplicate conflict (Merge, Discard, or Keep Both).
+ * On success, removes the resolved conflict from the TanStack Query cache so
+ * the sidebar badge drops and the queue advances without a full refetch.
+ *
+ * @example
+ *   const { mutateAsync: resolve } = useResolveConflict();
+ *   resolve({ conflictId: 'abc-123', status: 'Merged' });
+ */
+export function useResolveConflict() {
+  const queryClient = useQueryClient();
+
+  return useMutation<Conflict, Error, { conflictId: string; payload: ConflictResolvePayload }>({
+    mutationFn: async ({ conflictId, payload }) => {
+      const response = await apiClient.patch<Conflict>(
+        `/api/conflicts/${conflictId}`,
+        payload,
+      );
+      return response.data;
+    },
+    onSuccess: (_data, { conflictId }) => {
+      // Optimistic cache pop: remove the just-resolved conflict immediately.
+      queryClient.setQueryData<Conflict[]>(QUERY_KEYS.conflicts, (prev = []) =>
+        prev.filter((c) => c.id !== conflictId),
+      );
+    },
+  });
+}
+
+// ===========================================================================
+// HOOK 9: useBulkUpload — POST /api/leads/bulk (CSV file upload)
+// ===========================================================================
+
+/**
+ * Mutation hook to POST a CSV file to the bulk ingestion pipeline.
+ * Sends as multipart/form-data. On success, invalidates the leads cache.
+ *
+ * @example
+ *   const { mutateAsync: uploadCSV } = useBulkUpload();
+ *   const result = await uploadCSV(file);
+ *   console.log(`Imported: ${result.imported}, Flagged: ${result.flagged}`);
+ */
+export function useBulkUpload() {
+  const queryClient = useQueryClient();
+
+  return useMutation<BulkIngestResponse, Error, File>({
+    mutationFn: async (file: File): Promise<BulkIngestResponse> => {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await apiClient.post<BulkIngestResponse>(
+        '/api/leads/bulk',
+        formData,
+        {
+          // Let the browser set the multipart boundary automatically
+          headers: { 'Content-Type': 'multipart/form-data' },
+          // Generous timeout — large CSVs with many GPT-4o calls take time
+          timeout: 300_000,
+        },
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      // Bust the leads cache so the workbench shows the newly imported leads
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.conflicts });
+    },
   });
 }

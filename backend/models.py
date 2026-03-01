@@ -9,6 +9,7 @@ All numeric IDs are UUIDs to avoid collision in a distributed enterprise env.
 
 from __future__ import annotations
 
+import enum
 import uuid
 from typing import List, Optional
 
@@ -166,7 +167,9 @@ class LeadUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # 5. Lead Activity / Notes (in-memory for MVP; swap to Cosmos DB later)
 # ---------------------------------------------------------------------------
-class ActivityType(str):
+class ActivityType(str, enum.Enum):
+    """Valid activity type values for LeadActivity."""
+
     NOTE = "Note"
     CALL = "Call"
     EMAIL = "Email"
@@ -305,3 +308,57 @@ class LeadResponse(BaseModel):
             is_duplicate=lead.is_duplicate,
             ai_analysis=lead.ai_analysis,
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Conflict Resolution Update (PATCH /api/conflicts/{conflict_id})
+# ---------------------------------------------------------------------------
+class ConflictResolutionUpdate(BaseModel):
+    """
+    Payload for resolving a duplicate conflict via the three action buttons:
+    Merge, Discard, or Keep Both.
+
+    Only `status` is required from the frontend.
+    `resolved_by_*` fields are populated server-side from the JWT so they
+    cannot be spoofed by the caller.
+    """
+
+    status: str = Field(
+        ...,
+        description="New resolution status: 'Merged' | 'Discarded' | 'Kept Both'.",
+        examples=["Merged"],
+    )
+    resolved_by_email: Optional[str] = Field(
+        default=None,
+        description="Set server-side from JWT — ignored if provided by caller.",
+    )
+    resolved_by_name: Optional[str] = Field(
+        default=None,
+        description="Set server-side from JWT — ignored if provided by caller.",
+    )
+    resolved_at: str = Field(
+        default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+        description="ISO-8601 UTC timestamp of the resolution action.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. Bulk Ingest Response (POST /api/leads/bulk)
+# ---------------------------------------------------------------------------
+class BulkIngestResponse(BaseModel):
+    """
+    Summary returned after a CSV/XLSX bulk upload completes processing.
+    """
+
+    imported: int = Field(
+        ...,
+        description="Number of leads successfully imported and AI-scored.",
+    )
+    flagged: int = Field(
+        ...,
+        description="Number of leads flagged as duplicates during import.",
+    )
+    errors: List[str] = Field(
+        default_factory=list,
+        description="List of row-level error messages for rows that failed to parse or save.",
+    )

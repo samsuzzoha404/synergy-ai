@@ -5,8 +5,7 @@ import { leads, existingDuplicateLead } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { useQueryClient } from "@tanstack/react-query";
-import { QUERY_KEYS, useConflicts } from "@/hooks/useLeads";
+import { useConflicts, useResolveConflict } from "@/hooks/useLeads";
 
 function formatCurrency(value: number) {
   if (value >= 1_000_000) return `RM ${(value / 1_000_000).toFixed(0)}M`;
@@ -58,37 +57,62 @@ function FieldRow({ label, newVal, existingVal, highlight, match }: FieldRowProp
 
 export default function ConflictResolution() {
   const [resolved, setResolved] = useState(false);
-  const queryClient = useQueryClient();
+  const [isActioning, setIsActioning] = useState(false);
 
   // Primary data source: live API conflicts
   const { data: apiConflicts = [], isLoading } = useConflicts();
+  const { mutateAsync: resolveConflict } = useResolveConflict();
 
-  // Demo fallback: static mock data (shown when backend is offline)
+  // Demo fallback: static mock data (shown when backend is offline or no real conflict)
   const mockDuplicate = leads.find((l) => l.isDuplicate);
   const duplicateLead = mockDuplicate;
   const existing = existingDuplicateLead;
 
+  // The active live conflict (top of queue), if any
+  const activeConflict = apiConflicts[0] ?? null;
+
   // Total conflict count: prefer real API count, fall back to mock
   const totalConflicts = apiConflicts.length > 0 ? apiConflicts.length : (duplicateLead && !resolved ? 1 : 0);
 
-  const handleAction = (action: "merge" | "discard" | "keep") => {
-    const messages = {
+  const handleAction = async (action: "merge" | "discard" | "keep") => {
+    const statusMap: Record<typeof action, string> = {
+      merge: "Merged",
+      discard: "Discarded",
+      keep: "Kept Both",
+    };
+    const toastMessages = {
       merge: { title: "✅ Leads Merged", desc: "Leads merged. The primary record has been updated with the latest data." },
       discard: { title: "🗑️ New Lead Discarded", desc: "The duplicate lead has been removed. Existing record retained as primary." },
       keep: { title: "📋 Both Records Kept", desc: "Both records tracked independently with a cross-reference link." },
     };
-    toast({ title: messages[action].title, description: messages[action].desc, duration: 4000 });
 
-    // Optimistic cache update (BUG-F8): remove the resolved conflict from the
-    // TanStack Query cache immediately so the sidebar badge drops without a refetch.
-    // If there are live API conflicts, pop the first one (the one just actioned).
-    // Otherwise clear entirely for the mock-data demo path.
-    queryClient.setQueryData(QUERY_KEYS.conflicts, (prev: unknown) => {
-      const current = Array.isArray(prev) ? prev : [];
-      return current.length > 0 ? current.slice(1) : [];
-    });
+    setIsActioning(true);
+    try {
+      // --- Live path: call real API when a backend conflict exists ---
+      if (activeConflict) {
+        await resolveConflict({
+          conflictId: activeConflict.id,
+          payload: { status: statusMap[action] },
+        });
+      } else {
+        // --- Fallback demo path: mock-only mode (no backend conflict found) ---
+        // No API call needed; the cache update is handled inside useResolveConflict.onSuccess
+        // For the pure-mock fallback we just simulate the optimistic update.
+      }
 
-    setResolved(true);
+      toast({ title: toastMessages[action].title, description: toastMessages[action].desc, duration: 4000 });
+      setResolved(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      toast({
+        title: "❌ Resolution Failed",
+        description: `Could not update the conflict record. ${message}`,
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setIsActioning(false);
+    }
   };
 
   if (isLoading) {
@@ -127,6 +151,24 @@ export default function ConflictResolution() {
         <Button className="mt-4 gradient-primary text-white" onClick={() => setResolved(false)}>
           Reset Demo
         </Button>
+      </div>
+    );
+  }
+
+  // Guard: if there's no mock duplicate to show in the comparison UI,
+  // render a safe fallback instead of crashing with a TypeError.
+  if (!duplicateLead) {
+    return (
+      <div className="p-6 flex flex-col items-center justify-center min-h-[60vh]">
+        <div className="w-16 h-16 rounded-full bg-success-light flex items-center justify-center mb-4">
+          <CheckCircle className="w-8 h-8 text-success" />
+        </div>
+        <h2 className="text-lg font-semibold text-foreground">No Conflicts to Display</h2>
+        <p className="text-sm text-muted-foreground mt-1">
+          {apiConflicts.length > 0
+            ? `${apiConflicts.length} API conflict(s) detected — full detail view requires lead data.`
+            : "All leads are unique. Great work!"}
+        </p>
       </div>
     );
   }
@@ -275,25 +317,28 @@ export default function ConflictResolution() {
       <div className="flex flex-col sm:flex-row gap-3">
         <Button
           onClick={() => handleAction("merge")}
+          disabled={isActioning}
           className="flex-1 gradient-primary text-white font-bold gap-2 h-11"
         >
-          <GitMerge className="w-4 h-4" />
+          {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitMerge className="w-4 h-4" />}
           Merge Records
         </Button>
         <Button
           onClick={() => handleAction("discard")}
+          disabled={isActioning}
           variant="outline"
           className="flex-1 gap-2 h-11 border-destructive/40 text-destructive hover:bg-destructive/5 font-semibold"
         >
-          <Trash2 className="w-4 h-4" />
+          {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
           Discard New Lead
         </Button>
         <Button
           onClick={() => handleAction("keep")}
+          disabled={isActioning}
           variant="outline"
           className="flex-1 gap-2 h-11 font-semibold"
         >
-          <Copy className="w-4 h-4" />
+          {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
           Keep Both
         </Button>
       </div>

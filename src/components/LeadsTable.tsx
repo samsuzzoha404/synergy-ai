@@ -53,17 +53,17 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
 
     if (sortKey) {
       result = [...result].sort((a, b) => {
-        let av: any = a[sortKey];
-        let bv: any = b[sortKey];
-        if (typeof av === "string") av = av.toLowerCase();
-        if (typeof bv === "string") bv = bv.toLowerCase();
-        if (av < bv) return sortDir === "asc" ? -1 : 1;
-        if (av > bv) return sortDir === "asc" ? 1 : -1;
+        const av: string | number = a[sortKey] as string | number;
+        const bv: string | number = b[sortKey] as string | number;
+        const aComp = typeof av === "string" ? av.toLowerCase() : av;
+        const bComp = typeof bv === "string" ? bv.toLowerCase() : bv;
+        if (aComp < bComp) return sortDir === "asc" ? -1 : 1;
+        if (aComp > bComp) return sortDir === "asc" ? 1 : -1;
         return 0;
       });
     }
     return result;
-  }, [search, statusFilter, stageFilter, sortKey, sortDir]);
+  }, [leads, search, statusFilter, stageFilter, sortKey, sortDir]);
 
   const activeFilters = [
     statusFilter && { key: "status", label: statusFilter, clear: () => setStatusFilter("") },

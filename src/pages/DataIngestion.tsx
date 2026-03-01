@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
-import { useCreateLead } from "@/hooks/useLeads";
+import { useCreateLead, useBulkUpload } from "@/hooks/useLeads";
 
 interface FormData {
   projectName: string;
@@ -36,11 +36,16 @@ export default function DataIngestion() {
   const [uploading, setUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  // Real counts from the backend — defaults mimic the mock until API responds
+  const [importedCount, setImportedCount] = useState<number | null>(null);
+  const [flaggedCount, setFlaggedCount] = useState<number | null>(null);
+  const [uploadErrors, setUploadErrors] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<FormData>();
 
   const { mutateAsync: createLead } = useCreateLead();
+  const { mutateAsync: uploadCSV } = useBulkUpload();
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -56,22 +61,45 @@ export default function DataIngestion() {
   const processFile = (file: File) => {
     setUploadedFile(file);
     setUploading(true);
+    setUploadSuccess(false);
+    setImportedCount(null);
+    setFlaggedCount(null);
+    setUploadErrors([]);
     setActiveStep(0);
 
-    const steps = [0, 1, 2, 3];
-    steps.forEach((step, i) => {
-      setTimeout(() => setActiveStep(step), i * 500);
+    // Animate through the pipeline steps regardless of API speed for good UX
+    const delays = [0, 600, 1200, 1800];
+    delays.forEach((delay, i) => {
+      setTimeout(() => setActiveStep(i), delay);
     });
 
-    setTimeout(() => {
-      setUploading(false);
-      setUploadSuccess(true);
-      toast({
-        title: "✅ File Processed Successfully",
-        description: `${file.name} — 127 leads imported · 3 flagged for duplicate review.`,
-        duration: 5000,
+    // Call the real backend bulk ingest API concurrently with the animation
+    uploadCSV(file)
+      .then((result) => {
+        setImportedCount(result.imported);
+        setFlaggedCount(result.flagged);
+        setUploadErrors(result.errors);
+        setUploading(false);
+        setUploadSuccess(true);
+        toast({
+          title: "✅ File Processed Successfully",
+          description: `${file.name} — ${result.imported} leads imported · ${result.flagged} flagged for duplicate review.`,
+          duration: 5000,
+        });
+      })
+      .catch((err: Error) => {
+        setUploading(false);
+        setUploadSuccess(false);
+        toast({
+          title: "❌ Upload Failed",
+          description: err.message,
+          variant: "destructive",
+          duration: 5000,
+        });
+        // Allow user to try again
+        setUploadedFile(null);
+        setActiveStep(0);
       });
-    }, 2200);
   };
 
   const onManualSubmit = async (data: FormData) => {
@@ -230,20 +258,32 @@ export default function DataIngestion() {
                       <p className="text-sm font-semibold text-foreground mt-1">{uploadedFile.name}</p>
                       <div className="flex gap-4 mt-3">
                         <div className="text-center">
-                          <p className="text-xl font-black text-success">127</p>
+                          <p className="text-xl font-black text-success">{importedCount ?? 0}</p>
                           <p className="text-xs text-muted-foreground">Leads imported</p>
                         </div>
                         <div className="w-px bg-border" />
                         <div className="text-center">
-                          <p className="text-xl font-black text-destructive">3</p>
+                          <p className="text-xl font-black text-destructive">{flaggedCount ?? 0}</p>
                           <p className="text-xs text-muted-foreground">Flagged</p>
                         </div>
                       </div>
+                      {uploadErrors.length > 0 && (
+                        <details className="mt-3 text-left w-full">
+                          <summary className="text-xs text-warning cursor-pointer font-semibold">
+                            {uploadErrors.length} row error{uploadErrors.length !== 1 ? 's' : ''}
+                          </summary>
+                          <ul className="mt-1.5 space-y-0.5 max-h-24 overflow-y-auto">
+                            {uploadErrors.map((e, i) => (
+                              <li key={i} className="text-xs text-muted-foreground">{e}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
                         className="mt-4 bg-card"
-                        onClick={() => { setUploadedFile(null); setUploadSuccess(false); setActiveStep(0); }}
+                        onClick={() => { setUploadedFile(null); setUploadSuccess(false); setActiveStep(0); setImportedCount(null); setFlaggedCount(null); setUploadErrors([]); }}
                       >
                         <X className="w-3.5 h-3.5 mr-1.5" />
                         Upload Another
