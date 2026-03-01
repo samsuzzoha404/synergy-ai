@@ -23,15 +23,23 @@ import asyncio
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 import ai_engine
 import database
-from models import AIAnalysis, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
+from auth import (
+    MOCK_USERS,
+    CurrentUser,
+    LoginRequest,
+    TokenResponse,
+    create_access_token,
+    get_current_user,
+)
+from models import AIAnalysis, AuditLog, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at startup
@@ -53,6 +61,10 @@ _vector_cache: List[Dict[str, Any]] = []
 # In-memory activities store: { lead_id -> List[LeadActivity] }
 # In production: replace with Cosmos DB 'Activities' container.
 _activities_store: Dict[str, List[Dict[str, Any]]] = {}
+
+# In-memory audit log store: { lead_id -> List[AuditLog] }
+# In production: replace with Cosmos DB 'AuditLogs' container partitioned by lead_id.
+_audit_store: Dict[str, List[Dict[str, Any]]] = {}
 
 DUPLICATE_SIMILARITY_THRESHOLD = 0.92  # Cosine similarity ≥ 0.92 → flag as duplicate
 
@@ -167,6 +179,45 @@ def _check_duplicate(new_vector: List[float], new_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/auth/login — Issue a JWT for a valid email/password pair
+# ---------------------------------------------------------------------------
+@app.post(
+    "/api/auth/login",
+    response_model=TokenResponse,
+    tags=["Auth"],
+    summary="Authenticate with email + password and receive a JWT",
+)
+def login(payload: LoginRequest) -> TokenResponse:
+    """
+    Validates credentials against the hardcoded MOCK_USERS dict (hackathon).
+    In production: query Cosmos DB 'Users' container + compare bcrypt hash.
+
+    Returns:
+        TokenResponse — JWT access token + user profile object.
+    """
+    user = MOCK_USERS.get(payload.email.lower())
+    if not user or user["password"] != payload.password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+    token = create_access_token({
+        "sub": user["email"],
+        "name": user["name"],
+        "role": user["role"],
+        "bu": user["bu"],
+    })
+    user_profile = {
+        "email": user["email"],
+        "name": user["name"],
+        "role": user["role"],
+        "bu": user["bu"],
+    }
+    logger.info("Login successful — user='%s' role='%s'", user["email"], user["role"])
+    return TokenResponse(access_token=token, user=user_profile)
+
+
+# ---------------------------------------------------------------------------
 # Health Check
 # ---------------------------------------------------------------------------
 @app.get("/health", tags=["System"])
@@ -188,7 +239,10 @@ def health_check() -> Dict[str, str]:
     tags=["Leads"],
     summary="Ingest a new lead and trigger AI analysis",
 )
-async def create_lead(payload: LeadCreate) -> LeadResponse:
+async def create_lead(
+    payload: LeadCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LeadResponse:
     """
     The primary ingestion endpoint. Executes the full AI pipeline:
 
@@ -283,13 +337,17 @@ async def create_lead(payload: LeadCreate) -> LeadResponse:
     tags=["Leads"],
     summary="Fetch all leads sorted by most recently ingested",
 )
-async def get_leads() -> List[LeadResponse]:
+async def get_leads(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[LeadResponse]:
     """
-    Returns all leads from Cosmos DB, sorted newest-first (via Cosmos query).
-    The raw vector field is stripped from each response for payload efficiency.
+    Returns leads from Cosmos DB, sorted newest-first.
+    RBAC filtering:
+      • Admin    → all leads returned.
+      • Sales_Rep → only leads where top_match_bu matches the user's BU.
 
     Returns:
-        List[LeadResponse] — all enriched lead documents.
+        List[LeadResponse] — enriched lead documents (vector excluded).
     """
     try:
         raw_leads = await asyncio.to_thread(database.get_all_leads)
@@ -303,11 +361,14 @@ async def get_leads() -> List[LeadResponse]:
     results: List[LeadResponse] = []
     for doc in raw_leads:
         try:
-            # Reconstruct Pydantic model from raw Cosmos document
             lead = LeadDB(**{k: v for k, v in doc.items() if not k.startswith("_")})
+            # RBAC: Sales_Rep only sees their BU's leads
+            if current_user.role == "Sales_Rep" and current_user.bu:
+                top_bu = lead.ai_analysis.top_match_bu if lead.ai_analysis else ""
+                if current_user.bu.lower() not in top_bu.lower():
+                    continue
             results.append(LeadResponse.from_lead_db(lead))
         except Exception as parse_exc:
-            # Skip malformed documents — log and continue
             logger.warning("Skipping malformed lead doc id='%s': %s", doc.get("id"), parse_exc)
 
     return results
@@ -350,11 +411,16 @@ def get_conflicts() -> List[Dict[str, Any]]:
     tags=["Leads"],
     summary="Partially update a lead (stage, status)",
 )
-async def patch_lead(lead_id: str, payload: LeadUpdate) -> LeadResponse:
+async def patch_lead(
+    lead_id: str,
+    payload: LeadUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LeadResponse:
     """
     Applies a partial update to a persisted lead document.
     Primarily used by the Kanban board to move a lead between pipeline stages.
 
+    Phase-2 addition: Auto-generates an AuditLog entry for every field changed.
     Only fields explicitly set in the payload are modified; all others are unchanged.
     """
     try:
@@ -373,8 +439,36 @@ async def patch_lead(lead_id: str, payload: LeadUpdate) -> LeadResponse:
             detail=f"Lead '{lead_id}' not found.",
         )
 
-    # Apply only the provided (non-None) fields
+    # Apply only the provided (non-None) fields and capture old values for audit
     update_data = payload.model_dump(exclude_none=True)
+
+    # --- Generate audit log entries for every changed field ---
+    if lead_id not in _audit_store:
+        _audit_store[lead_id] = []
+
+    for field_name, new_val in update_data.items():
+        old_val = target_doc.get(field_name, "")
+        if str(old_val) != str(new_val):  # only log actual changes
+            action_label = {
+                "stage": "Stage Changed",
+                "status": "Status Updated",
+            }.get(field_name, f"{field_name.replace('_', ' ').title()} Updated")
+
+            audit_entry = AuditLog(
+                lead_id=lead_id,
+                user_name=current_user.name,
+                user_email=current_user.email,
+                action=action_label,
+                field_name=field_name,
+                previous_value=str(old_val),
+                new_value=str(new_val),
+            )
+            _audit_store[lead_id].append(audit_entry.model_dump())
+            logger.info(
+                "Audit — lead='%s' field='%s' '%s'→'%s' by '%s'",
+                lead_id, field_name, old_val, new_val, current_user.email,
+            )
+
     target_doc.update(update_data)
 
     try:
@@ -442,6 +536,30 @@ def create_activity(lead_id: str, payload: LeadActivityCreate) -> LeadActivity:
         lead_id, new_activity.activity_type, new_activity.user_name,
     )
     return new_activity
+
+
+# ---------------------------------------------------------------------------
+# GET /api/leads/{lead_id}/audit-logs — Fetch change history for a lead
+# ---------------------------------------------------------------------------
+@app.get(
+    "/api/leads/{lead_id}/audit-logs",
+    response_model=List[AuditLog],
+    status_code=status.HTTP_200_OK,
+    tags=["Audit"],
+    summary="Fetch the immutable change history for a specific lead",
+)
+def get_audit_logs(
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[AuditLog]:
+    """
+    Returns all audit log entries for the given lead, sorted oldest-first
+    so the frontend timeline reads top-to-bottom chronologically.
+
+    In production: query Cosmos DB 'AuditLogs' container partitioned by lead_id.
+    """
+    raw = _audit_store.get(lead_id, [])
+    return [AuditLog(**entry) for entry in raw]
 
 
 # NOTE: Startup logic has been moved to the `lifespan` context manager above.

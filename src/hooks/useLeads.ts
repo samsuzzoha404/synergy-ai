@@ -16,7 +16,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient, type Conflict, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
+import { apiClient, type AuditLog, type Conflict, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
 import { leads as mockLeads, type Lead } from '@/data/mockData';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +27,7 @@ export const QUERY_KEYS = {
   leads: ['leads'] as const,
   conflicts: ['conflicts'] as const,
   activities: (leadId: string) => ['activities', leadId] as const,
+  auditLogs: (leadId: string) => ['auditLogs', leadId] as const,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -234,5 +235,29 @@ export function useCreateActivity(leadId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.activities(leadId) });
     },
+  });
+}
+
+// ===========================================================================
+// HOOK 7: useAuditLogs — Fetch the immutable change history for a single lead
+// ===========================================================================
+
+/**
+ * Fetches all audit log entries for a specific lead (GET /api/leads/{id}/audit-logs).
+ * Used by the SmartDrawer "Audit History" tab to render a timeline of who
+ * changed what and when.
+ *
+ * @example
+ *   const { data: logs = [] } = useAuditLogs(lead.id);
+ */
+export function useAuditLogs(leadId: string | null) {
+  return useQuery<AuditLog[], Error>({
+    queryKey: QUERY_KEYS.auditLogs(leadId ?? ''),
+    enabled: !!leadId,
+    queryFn: async (): Promise<AuditLog[]> => {
+      const response = await apiClient.get<AuditLog[]>(`/api/leads/${leadId}/audit-logs`);
+      return response.data;
+    },
+    staleTime: 10_000,
   });
 }

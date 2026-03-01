@@ -219,7 +219,61 @@ class LeadActivityCreate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 6. API Response wrapper (clean envelope for the frontend)
+# 6. Audit Log — immutable change history (stage changes, value edits, etc.)
+# ---------------------------------------------------------------------------
+class AuditLog(BaseModel):
+    """
+    An immutable record of a change made to a lead document.
+    Generated automatically whenever a PATCH operation modifies stage/status.
+    Stored in the in-memory _audit_store (swap to Cosmos DB 'AuditLogs' in prod).
+    """
+
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique audit entry identifier (UUID v4).",
+    )
+    lead_id: str = Field(
+        ...,
+        description="The lead this change was applied to.",
+    )
+    user_name: str = Field(
+        ...,
+        description="Display name of the authenticated user who made the change.",
+        examples=["Marvis Tan"],
+    )
+    user_email: str = Field(
+        ...,
+        description="Email of the user — sourced from the JWT sub claim.",
+        examples=["marvis@chinhin.com"],
+    )
+    action: str = Field(
+        ...,
+        description="Short description of the change type.",
+        examples=["Stage Changed", "Status Updated"],
+    )
+    field_name: str = Field(
+        ...,
+        description="The name of the field that was changed.",
+        examples=["stage"],
+    )
+    previous_value: str = Field(
+        ...,
+        description="The value of the field before the change.",
+        examples=["Planning"],
+    )
+    new_value: str = Field(
+        ...,
+        description="The value of the field after the change.",
+        examples=["Tender"],
+    )
+    timestamp: str = Field(
+        default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+        description="ISO-8601 UTC timestamp of when the change was made.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. API Response wrapper (clean envelope for the frontend)
 # ---------------------------------------------------------------------------
 class LeadResponse(BaseModel):
     """

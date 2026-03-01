@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Brain, Sparkles, CheckCircle2, Building2, MapPin, DollarSign,
   Users, Package, Calendar, Layers, Phone, Mail, Send, Clock,
-  FileText, PhoneCall, AtSign, Activity, Plus, Loader2
+  FileText, PhoneCall, AtSign, Activity, Plus, Loader2, History, GitCommitHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -11,8 +11,8 @@ import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { useLeadActivities, useCreateActivity } from "@/hooks/useLeads";
-import type { LeadActivity } from "@/lib/api";
+import { useLeadActivities, useCreateActivity, useAuditLogs } from "@/hooks/useLeads";
+import type { AuditLog, LeadActivity } from "@/lib/api";
 
 interface SmartDrawerProps {
   lead: Lead | null;
@@ -34,12 +34,13 @@ const BU_CONTACTS: Record<string, { name: string; phone: string; email: string }
 
 export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const [assigning, setAssigning] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "contact" | "activities">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "contact" | "activities" | "audit">("overview");
   const [noteText, setNoteText] = useState("");
   const [noteType, setNoteType] = useState<"Note" | "Call" | "Email">("Note");
 
   const { data: activities = [], isLoading: activitiesLoading } = useLeadActivities(lead?.id ?? null);
   const { mutateAsync: createActivity, isPending: submittingNote } = useCreateActivity(lead?.id ?? "");
+  const { data: auditLogs = [], isLoading: auditLoading } = useAuditLogs(lead?.id ?? null);
 
   const handleApprove = () => {
     if (!lead) return;
@@ -122,7 +123,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
 
             {/* Tabs */}
             <div className="flex border-b border-border flex-shrink-0 bg-card px-5">
-              {(["overview", "contact", "activities"] as const).map((tab) => (
+              {(["overview", "contact", "activities", "audit"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -133,7 +134,13 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   )}
                 >
-                  {tab === "overview" ? "AI Synergy" : tab === "contact" ? "BU Contact" : "Activities & Notes"}
+                  {tab === "overview"
+                    ? "AI Synergy"
+                    : tab === "contact"
+                    ? "BU Contact"
+                    : tab === "activities"
+                    ? "Activities & Notes"
+                    : "Audit History"}
                 </button>
               ))}
             </div>
@@ -301,7 +308,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                     </div>
                   </div>
                 </div>
-              ) : (
+              ) : activeTab === "activities" ? (
                 /* ----- Activities & Notes Tab ----- */
                 <div className="space-y-4">
                   {/* Add Note */}
@@ -428,6 +435,103 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                       </div>
                     )}
                   </div>
+                </div>
+              ) : (
+                /* ----- Audit History Tab ----- */
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg gradient-primary flex items-center justify-center flex-shrink-0">
+                      <History className="w-3.5 h-3.5 text-white" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-foreground">Change History</p>
+                      <p className="text-xs text-muted-foreground">Immutable audit trail of all edits</p>
+                    </div>
+                  </div>
+
+                  {auditLoading ? (
+                    <div className="flex items-center justify-center py-10 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      <span className="text-sm">Loading history…</span>
+                    </div>
+                  ) : auditLogs.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-12 text-center">
+                      <GitCommitHorizontal className="w-8 h-8 text-muted-foreground/30 mb-3" />
+                      <p className="text-sm font-medium text-muted-foreground">No changes recorded yet</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">
+                        Move this lead between Kanban stages to start the audit trail.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="relative pl-6 space-y-4">
+                      {/* Vertical timeline spine */}
+                      <div className="absolute left-2 top-2 bottom-2 w-px bg-border" />
+
+                      {[...auditLogs].reverse().map((log: AuditLog) => {
+                        const isStageChange = log.field_name === "stage";
+                        const dotColor = isStageChange ? "bg-primary" : "bg-warning";
+
+                        return (
+                          <div key={log.id} className="relative">
+                            {/* Timeline node */}
+                            <div
+                              className={cn(
+                                "absolute -left-4 top-1.5 w-2.5 h-2.5 rounded-full border-2 border-card",
+                                dotColor,
+                              )}
+                            />
+
+                            <div className="bg-muted/50 border border-border rounded-xl p-3.5">
+                              {/* Top row: action + timestamp */}
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-full",
+                                      isStageChange
+                                        ? "bg-primary/10 text-primary"
+                                        : "bg-warning/10 text-warning",
+                                    )}
+                                  >
+                                    {log.action}
+                                  </span>
+                                </div>
+                                <span className="text-xs text-muted-foreground/60 flex items-center gap-1 whitespace-nowrap flex-shrink-0">
+                                  <Clock className="w-3 h-3" />
+                                  {new Date(log.timestamp).toLocaleString("en-MY", {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+
+                              {/* Change description */}
+                              <p className="text-sm text-foreground leading-relaxed">
+                                <span className="font-semibold">{log.user_name}</span>
+                                {" moved "}
+                                <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
+                                  {log.field_name}
+                                </span>
+                                {" from "}
+                                <span className="font-bold text-destructive/80">{log.previous_value}</span>
+                                {" → "}
+                                <span className="font-bold text-success">{log.new_value}</span>
+                              </p>
+
+                              {/* Author email */}
+                              <p className="text-xs text-muted-foreground/60 mt-1.5 flex items-center gap-1">
+                                <AtSign className="w-3 h-3" />
+                                {log.user_email}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

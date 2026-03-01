@@ -24,3 +24,7 @@ numpy==2.2.0        # Used for cosine similarity in duplicate detection
 
 # --- CORS & HTTP ---
 httpx==0.28.0       # Async HTTP client used internally by openai SDK
+
+# --- Authentication (Phase 2) ---
+python-jose[cryptography]==3.3.0   # JWT encode/decode (jose.jwt)
+cryptography==43.0.3               # Required by python-jose[cryptography] for RSA/EC

@@ -83,6 +83,37 @@ export interface LeadActivityCreate {
   content: string;
 }
 
+/** An immutable audit log entry (mirrors AuditLog Pydantic model). */
+export interface AuditLog {
+  id: string;
+  lead_id: string;
+  user_name: string;
+  user_email: string;
+  action: string;          // e.g. "Stage Changed"
+  field_name: string;      // e.g. "stage"
+  previous_value: string;
+  new_value: string;
+  timestamp: string;       // ISO-8601 UTC
+}
+
+/** Login request payload for POST /api/auth/login. */
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+/** Response from POST /api/auth/login. */
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  user: {
+    email: string;
+    name: string;
+    role: 'Admin' | 'Sales_Rep';
+    bu: string | null;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Axios Instance — configure base URL and default headers here
 // ---------------------------------------------------------------------------
@@ -103,35 +134,46 @@ export const apiClient = axios.create({
 });
 
 // ---------------------------------------------------------------------------
-// Request Interceptor — inject auth tokens here when Azure AD is added
+// Request Interceptor — inject Bearer token from localStorage on every call
 // ---------------------------------------------------------------------------
 apiClient.interceptors.request.use(
   (config) => {
-    /**
-     * FUTURE: Inject Azure AD Bearer token for production auth.
-     *   const token = await getAzureADToken();
-     *   config.headers.Authorization = `Bearer ${token}`;
-     */
+    const token = localStorage.getItem('synergy_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
     return config;
   },
   (error: AxiosError) => Promise.reject(error),
 );
 
 // ---------------------------------------------------------------------------
-// Response Interceptor — normalise errors across the entire app
+// Response Interceptor — normalise errors; redirect to /auth on 401
 // ---------------------------------------------------------------------------
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error: AxiosError<{ detail: string }>) => {
-    // Extract the FastAPI detail message if available
     const serverMessage = error.response?.data?.detail;
     const statusCode = error.response?.status;
+
+    // On 401, clear stale auth data and send the user to the login page.
+    // Guard against redirect loops by skipping the auth endpoint itself.
+    if (
+      statusCode === 401 &&
+      !error.config?.url?.includes('/api/auth/login')
+    ) {
+      localStorage.removeItem('synergy_token');
+      localStorage.removeItem('synergy_user');
+      // Only redirect if we're in a browser context (not SSR / tests)
+      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth')) {
+        window.location.href = '/auth';
+      }
+    }
 
     console.error(
       `[Synergy API Error] ${statusCode ?? 'Network'}: ${serverMessage ?? error.message}`,
     );
 
-    // Re-throw with an enriched message so React Query's error state is descriptive
     const enrichedError = new Error(
       serverMessage ?? `Request failed with status ${statusCode}`,
     );

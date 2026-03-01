@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Zap, Mail, User, ArrowRight, Lock, BarChart3, Users, TrendingUp,
   ShieldCheck, Sparkles, ChevronRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/context/AuthContext";
 
 /* ─── tiny reusable input ─── */
 function PremiumInput({
@@ -49,28 +51,51 @@ export default function Auth() {
   const [searchParams] = useSearchParams();
   const initialMode = searchParams.get("mode") === "signup" ? "signup" : "signin";
   const [mode, setMode] = useState<"signin" | "signup">(initialMode);
-  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { login } = useAuth();
 
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+  const loginMutation = useMutation({
+    mutationFn: () => login({ email, password }),
+    onSuccess: () => {
       toast({
-        title: mode === "signin" ? "Welcome back!" : "Account created!",
-        description:
-          mode === "signin"
-            ? `Signed in as ${email || "user@chinhin.com"}`
-            : "Your account has been set up successfully.",
+        title: "Welcome back!",
+        description: `Signed in as ${email}`,
       });
       navigate("/dashboard");
-    }, 1400);
+    },
+    onError: (err: Error) => {
+      toast({
+        title: "Login failed",
+        description: err.message ?? "Invalid email or password.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const loading = loginMutation.isPending;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    loginMutation.mutate();
+  };
+
+  /** One-click demo login — fills credentials and submits immediately. */
+  const handleDemoLogin = (demoEmail: string, demoPassword: string) => {
+    setEmail(demoEmail);
+    setPassword(demoPassword);
+    login({ email: demoEmail, password: demoPassword })
+      .then(() => {
+        toast({ title: "Demo login successful", description: `Signed in as ${demoEmail}` });
+        navigate("/dashboard");
+      })
+      .catch((err: Error) => {
+        toast({ title: "Demo login failed", description: err.message, variant: "destructive" });
+      });
   };
 
   const stats = [
@@ -459,8 +484,40 @@ export default function Auth() {
                   {/* Divider */}
                   <div className="flex items-center gap-3 my-6">
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
-                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.22)" }}>or</span>
+                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.22)" }}>quick demo</span>
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
+                  </div>
+
+                  {/* Demo Login shortcuts */}
+                  <div className="flex flex-col gap-2 mb-6">
+                    <button
+                      type="button"
+                      onClick={() => handleDemoLogin("marvis@chinhin.com", "admin123")}
+                      disabled={loading}
+                      className="w-full h-10 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200"
+                      style={{
+                        background: "hsl(217 91% 55% / 0.12)",
+                        border: "1px solid hsl(217 91% 55% / 0.25)",
+                        color: "hsl(217 91% 70%)",
+                      }}
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Login as Admin — marvis@chinhin.com
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDemoLogin("sales@stucken.com", "sales123")}
+                      disabled={loading}
+                      className="w-full h-10 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200"
+                      style={{
+                        background: "rgba(255,255,255,0.04)",
+                        border: "1px solid rgba(255,255,255,0.1)",
+                        color: "rgba(255,255,255,0.45)",
+                      }}
+                    >
+                      <Users className="w-3.5 h-3.5" />
+                      Login as Sales Rep — sales@stucken.com
+                    </button>
                   </div>
 
                   {/* Switch mode */}
