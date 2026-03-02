@@ -180,7 +180,6 @@ apiClient.interceptors.response.use(
     ) {
       localStorage.removeItem('synergy_token');
       localStorage.removeItem('synergy_user');
-      // Only redirect if we're in a browser context (not SSR / tests)
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth')) {
         window.location.href = '/auth';
       }

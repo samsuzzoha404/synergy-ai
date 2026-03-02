@@ -24,7 +24,10 @@ numpy==2.2.0        # Used for cosine similarity in duplicate detection
 
 # --- CORS & HTTP ---
 httpx==0.28.0       # Async HTTP client used internally by openai SDK
+python-multipart==0.0.22  # Required by FastAPI for file upload (UploadFile / Form) endpoints
 
 # --- Authentication (Phase 2) ---
 python-jose[cryptography]==3.3.0   # JWT encode/decode (jose.jwt)
 cryptography==43.0.3               # Required by python-jose[cryptography] for RSA/EC
+passlib[bcrypt]==1.7.4             # bcrypt password hashing for Cosmos DB Users container
+bcrypt==4.2.1                      # Underlying bcrypt implementation used by passlib

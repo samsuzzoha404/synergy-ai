@@ -30,11 +30,20 @@ import { apiClient } from '@/lib/api';
 // Types
 // ---------------------------------------------------------------------------
 
+export type BU_Name =
+  | 'Stucken AAC'
+  | 'Ajiya Metal / Glass'
+  | 'PPG Hing'
+  | 'Signature Alliance'
+  | 'Signature Kitchen'
+  | 'Fiamma Holding'
+  | 'G-Cast';
+
 export interface AuthUser {
   email: string;
   name: string;
   role: 'Admin' | 'Sales_Rep';
-  bu: string | null;
+  bu: BU_Name | null;
 }
 
 interface LoginPayload {
@@ -116,6 +125,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const login = useCallback(async (payload: LoginPayload): Promise<void> => {
+    // Call the real backend — all 8 demo accounts are seeded in Cosmos DB Users container
+    // so /api/auth/login returns a valid JWT for every predefined account.
     const response = await apiClient.post<LoginResponse>(
       '/api/auth/login',
       payload,
@@ -123,7 +134,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { access_token, user: userProfile } = response.data;
     setToken(access_token);
     setUser(userProfile);
-    // Persist immediately so page refreshes don't lose state.
     localStorage.setItem(STORAGE_TOKEN_KEY, access_token);
     localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(userProfile));
   }, []);

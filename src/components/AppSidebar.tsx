@@ -33,10 +33,10 @@ interface SidebarProps {
 
 export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  // Fetch live conflict count for the sidebar badge
+  // Fetch live conflict count for the sidebar badge (BUG-M4 fix)
   const { data: conflicts = [] } = useConflicts();
-  // Fall back to 1 (mock duplicate) when backend is offline so demo always shows a badge
-  const conflictCount = conflicts.length > 0 ? conflicts.length : 1;
+  // Show the real count. If 0, badge is hidden — no artificial fallback to 1.
+  const conflictCount = conflicts.length;
 
   const SidebarContent = ({ isMobile = false }: { isMobile?: boolean }) => (
     <div

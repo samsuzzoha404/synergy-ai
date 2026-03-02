@@ -31,6 +31,7 @@ import { Lead, LeadStage } from "@/data/mockData";
 import { useUpdateLeadStage } from "@/hooks/useLeads";
 import { cn } from "@/lib/utils";
 import { MatchScoreBadge } from "@/components/StatusBadge";
+import { toast } from "@/hooks/use-toast";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -255,7 +256,19 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
 
     if (!newStage) return;
 
-    // Persist via PATCH — falls back gracefully if backend is unavailable
+    // BUG-M7 fix: mock leads (IDs starting with "L00") don't exist in Cosmos DB.
+    // Calling PATCH for them returns 404. Update local state only and inform the user.
+    if (leadId.startsWith("L00")) {
+      toast({
+        title: "Cannot update stage of a demo lead",
+        description: "Mock demo leads are read-only. Ingest a real lead via Data Ingestion to use the Kanban board.",
+        variant: "destructive",
+        duration: 4000,
+      });
+      return;
+    }
+
+    // Persist via PATCH for real API leads only
     moveStage({ leadId, update: { stage: newStage } });
   }
 

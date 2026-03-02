@@ -9,13 +9,14 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart as RechartsPie, Pie, Cell, AreaChart, Area, LabelList, Legend,
 } from "recharts";
-import { kpiData, leadsbyBU, projectStageData, leads as mockLeads, recentActivity } from "@/data/mockData";
+import { kpiData, leadsbyBU, projectStageData, recentActivity } from "@/data/mockData";
 import { KPICard } from "@/components/KPICard";
 import { StatusBadge, MatchScoreBadge } from "@/components/StatusBadge";
 import { SmartDrawer } from "@/components/SmartDrawer";
 import type { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { useLeads } from "@/hooks/useLeads";
+import { useAuth } from "@/context/AuthContext";
 
 // Dynamic time-of-day greeting helper
 function getGreeting(): string {
@@ -80,7 +81,9 @@ const activityIcons: Record<string, { icon: LucideIcon; color: string }> = {
 export default function Dashboard() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const navigate = useNavigate();
-  const { data: leads = mockLeads } = useLeads();
+  const { user } = useAuth();
+  // All KPI data flows from the hook — RBAC filtering happens inside useLeads().
+  const { data: leads = [] } = useLeads();
 
   // ── Dynamic KPI Computation ─────────────────────────────────────────────
   // 1. Total Leads: live count from merged mock + API leads
@@ -144,7 +147,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-foreground">Executive Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {getGreeting()}, Marvis — Q2 2025 Synergy overview
+              {getGreeting()}, {user?.name ?? 'there'} — Q2 2025 Synergy overview
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">

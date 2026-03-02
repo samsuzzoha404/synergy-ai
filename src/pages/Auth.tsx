@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
@@ -8,6 +8,18 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/context/AuthContext";
+
+/* ─── demo account definitions ─── */
+const DEMO_ACCOUNTS_UI = [
+  { label: 'Admin: Marvis',       email: 'marvis@chinhin.com',   isAdmin: true  },
+  { label: 'Stucken AAC',         email: 'sales@stucken.com',    isAdmin: false },
+  { label: 'Ajiya Metal/Glass',   email: 'sales@ajiya.com',      isAdmin: false },
+  { label: 'G-Cast',              email: 'sales@gcast.com',      isAdmin: false },
+  { label: 'Signature Alliance',  email: 'sales@signature.com',  isAdmin: false },
+  { label: 'Signature Kitchen',   email: 'sales@kitchen.com',    isAdmin: false },
+  { label: 'Fiamma Holding',      email: 'sales@fiamma.com',     isAdmin: false },
+  { label: 'PPG Hing',            email: 'sales@ppghing.com',    isAdmin: false },
+] as const;
 
 /* ─── tiny reusable input ─── */
 function PremiumInput({
@@ -53,7 +65,15 @@ export default function Auth() {
   const [mode, setMode] = useState<"signin" | "signup">(initialMode);
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { login } = useAuth();
+  const { login, isAuthenticated } = useAuth();
+
+  // Navigate to dashboard as soon as React has committed the auth state updates.
+  // This is the correct pattern — avoids racing against React's batched state flush.
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
 
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -81,17 +101,28 @@ export default function Auth() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // BUG-M5 fix: signup mode has no backend endpoint — show an informative toast
+    // and redirect to login mode instead of attempting a login with signup data.
+    if (mode === "signup") {
+      toast({
+        title: "Registration disabled for this demo",
+        description: "Please use the Admin or Sales demo login below.",
+        variant: "destructive",
+      });
+      setMode("signin");
+      return;
+    }
     loginMutation.mutate();
   };
 
-  /** One-click demo login — fills credentials and submits immediately. */
+  /** One-click demo login — calls login() and lets the isAuthenticated effect handle navigation. */
   const handleDemoLogin = (demoEmail: string, demoPassword: string) => {
     setEmail(demoEmail);
     setPassword(demoPassword);
     login({ email: demoEmail, password: demoPassword })
       .then(() => {
         toast({ title: "Demo login successful", description: `Signed in as ${demoEmail}` });
-        navigate("/dashboard");
+        // Navigation is handled by the useEffect above once React flushes the auth state.
       })
       .catch((err: Error) => {
         toast({ title: "Demo login failed", description: err.message, variant: "destructive" });
@@ -323,12 +354,12 @@ export default function Auth() {
         </div>
 
         {/* Centred form */}
-        <div className="relative z-10 flex-1 flex items-center justify-center px-6 sm:px-10 py-10">
+        <div className="relative z-10 flex-1 flex items-center justify-center px-6 sm:px-10 py-6">
           <div className="w-full max-w-[400px]">
 
             {/* Glass card */}
             <div
-              className="rounded-3xl p-8 sm:p-10"
+              className="rounded-3xl p-7 sm:p-8"
               style={{
                 background: "rgba(255,255,255,0.03)",
                 border: "1px solid rgba(255,255,255,0.08)",
@@ -346,7 +377,7 @@ export default function Auth() {
                   transition={{ duration: 0.22, ease: "easeOut" }}
                 >
                   {/* Header */}
-                  <div className="mb-8">
+                  <div className="mb-5">
                     {/* Mode badge */}
                     <div
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full mb-5"
@@ -380,7 +411,7 @@ export default function Auth() {
                   </div>
 
                   {/* Form */}
-                  <form onSubmit={handleSubmit} className="space-y-4">
+                  <form onSubmit={handleSubmit} className="space-y-3">
                     {mode === "signup" && (
                       <div className="space-y-1.5">
                         <label htmlFor="name" className="block text-xs font-semibold text-white/50 uppercase tracking-wider pl-1">
@@ -444,7 +475,7 @@ export default function Auth() {
                       <button
                         type="submit"
                         disabled={loading}
-                        className="w-full h-12 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all duration-200 relative overflow-hidden group"
+                        className="w-full h-10 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all duration-200 relative overflow-hidden group"
                         style={{
                           background: loading
                             ? "hsl(217 91% 45%)"
@@ -482,42 +513,53 @@ export default function Auth() {
                   </form>
 
                   {/* Divider */}
-                  <div className="flex items-center gap-3 my-6">
+                  <div className="flex items-center gap-3 my-4">
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
-                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.22)" }}>quick demo</span>
+                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.22)" }}>Demo Accounts — Quick Login</span>
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
                   </div>
 
-                  {/* Demo Login shortcuts */}
-                  <div className="flex flex-col gap-2 mb-6">
-                    <button
-                      type="button"
-                      onClick={() => handleDemoLogin("marvis@chinhin.com", "admin123")}
-                      disabled={loading}
-                      className="w-full h-10 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200"
-                      style={{
-                        background: "hsl(217 91% 55% / 0.12)",
-                        border: "1px solid hsl(217 91% 55% / 0.25)",
-                        color: "hsl(217 91% 70%)",
-                      }}
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      Login as Admin — marvis@chinhin.com
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDemoLogin("sales@stucken.com", "sales123")}
-                      disabled={loading}
-                      className="w-full h-10 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200"
-                      style={{
-                        background: "rgba(255,255,255,0.04)",
-                        border: "1px solid rgba(255,255,255,0.1)",
-                        color: "rgba(255,255,255,0.45)",
-                      }}
-                    >
-                      <Users className="w-3.5 h-3.5" />
-                      Login as Sales Rep — sales@stucken.com
-                    </button>
+                  {/* ── Demo login: Admin full-width + BU 4-col grid ── */}
+                  <div className="mb-4 flex flex-col gap-1.5">
+                    {/* Admin button — full width */}
+                    {DEMO_ACCOUNTS_UI.filter(a => a.isAdmin).map(({ label, email }) => (
+                      <button
+                        key={email}
+                        type="button"
+                        onClick={() => handleDemoLogin(email, 'admin123')}
+                        disabled={loading}
+                        title={email}
+                        className="w-full h-8 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 hover:brightness-125 disabled:opacity-40"
+                        style={{
+                          background: "hsl(217 91% 55% / 0.15)",
+                          border: "1px solid hsl(217 91% 55% / 0.35)",
+                          color: "hsl(217 91% 75%)",
+                        }}
+                      >
+                        <ShieldCheck className="w-3 h-3 flex-shrink-0" />
+                        <span>{label}</span>
+                      </button>
+                    ))}
+                    {/* BU Sales Rep buttons — 4-column grid */}
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {DEMO_ACCOUNTS_UI.filter(a => !a.isAdmin).map(({ label, email }) => (
+                        <button
+                          key={email}
+                          type="button"
+                          onClick={() => handleDemoLogin(email, 'sales123')}
+                          disabled={loading}
+                          title={`${label} · ${email}`}
+                          className="h-8 rounded-xl text-[10px] font-semibold flex items-center justify-center gap-1 transition-all duration-200 hover:brightness-125 disabled:opacity-40 px-1"
+                          style={{
+                            background: "rgba(255,255,255,0.04)",
+                            border: "1px solid rgba(255,255,255,0.09)",
+                            color: "rgba(255,255,255,0.50)",
+                          }}
+                        >
+                          <span className="truncate">{label}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Switch mode */}
@@ -541,7 +583,7 @@ export default function Auth() {
             </div>
 
             {/* Trust badges */}
-            <div className="flex items-center justify-center gap-5 mt-7">
+            <div className="flex items-center justify-center gap-5 mt-4">
               {[
                 { icon: ShieldCheck, label: "SOC 2 Compliant" },
                 { icon: Lock,        label: "256-bit Encrypted" },

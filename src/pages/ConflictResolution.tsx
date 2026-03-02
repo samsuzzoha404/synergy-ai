@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { AlertTriangle, GitMerge, Trash2, Copy, CheckCircle, ChevronRight, Shield, Loader2 } from "lucide-react";
-import { leads, existingDuplicateLead } from "@/data/mockData";
+import { existingDuplicateLead } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { useConflicts, useResolveConflict } from "@/hooks/useLeads";
+import { useConflicts, useLeads, useResolveConflict } from "@/hooks/useLeads";
 
 function formatCurrency(value: number) {
   if (value >= 1_000_000) return `RM ${(value / 1_000_000).toFixed(0)}M`;
@@ -59,19 +59,41 @@ export default function ConflictResolution() {
   const [resolved, setResolved] = useState(false);
   const [isActioning, setIsActioning] = useState(false);
 
-  // Primary data source: live API conflicts
+  // Primary data sources: live API conflicts + leads cache
   const { data: apiConflicts = [], isLoading } = useConflicts();
+  const { data: allLeads = [] } = useLeads();
   const { mutateAsync: resolveConflict } = useResolveConflict();
-
-  // Demo fallback: static mock data (shown when backend is offline or no real conflict)
-  const mockDuplicate = leads.find((l) => l.isDuplicate);
-  const duplicateLead = mockDuplicate;
-  const existing = existingDuplicateLead;
 
   // The active live conflict (top of queue), if any
   const activeConflict = apiConflicts[0] ?? null;
 
-  // Total conflict count: prefer real API count, fall back to mock
+  // BUG-M3 fix: Try to find the lead details from the TanStack Query leads cache
+  // using the conflict's lead_id. Falls back to the RBAC-filtered mock duplicate if not found.
+  // This allows the comparison UI to show real data when a backend conflict exists.
+  const apiNewLead = activeConflict
+    ? allLeads.find((l) => l.id === activeConflict.lead_id) ?? null
+    : null;
+  const apiExistingLead = activeConflict
+    ? allLeads.find((l) => l.id === activeConflict.matched_lead_id) ?? null
+    : null;
+
+  // Determine which lead data to show in the comparison UI:
+  // Priority: real API lead from cache → RBAC-filtered mock duplicate → null
+  const duplicateLead = apiNewLead ?? allLeads.find((l) => l.isDuplicate) ?? null;
+  const existing = apiExistingLead
+    ? {
+        id: apiExistingLead.id,
+        projectName: apiExistingLead.projectName,
+        location: apiExistingLead.location,
+        value: apiExistingLead.value,
+        stage: apiExistingLead.stage,
+        developer: apiExistingLead.developer,
+        status: apiExistingLead.status,
+        createdDate: apiExistingLead.createdDate,
+      }
+    : existingDuplicateLead;
+
+  // Total conflict count: real API count only (BUG-M4 already fixed in sidebar)
   const totalConflicts = apiConflicts.length > 0 ? apiConflicts.length : (duplicateLead && !resolved ? 1 : 0);
 
   const handleAction = async (action: "merge" | "discard" | "keep") => {
@@ -155,8 +177,62 @@ export default function ConflictResolution() {
     );
   }
 
-  // Guard: if there's no mock duplicate to show in the comparison UI,
-  // render a safe fallback instead of crashing with a TypeError.
+  // Guard: when a real API conflict exists but the involved leads aren't found
+  // in the TanStack Query cache, render a structured summary from the conflict
+  // object itself rather than crashing with a TypeError or silently showing mock data.
+  if (!duplicateLead && activeConflict) {
+    return (
+      <div className="p-4 md:p-6 space-y-5 animate-fade-in">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold text-foreground flex items-center gap-2">
+              <Shield className="w-5 h-5 text-destructive" />
+              Conflict Resolution
+            </h1>
+            <p className="text-sm text-muted-foreground mt-0.5">AI detected a duplicate entry — review and decide the action below.</p>
+          </div>
+          <span className="hidden sm:flex items-center gap-1.5 text-xs bg-destructive/10 text-destructive border border-destructive/20 rounded-lg px-3 py-1.5 font-semibold flex-shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />
+            {apiConflicts.length} Conflict{apiConflicts.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-bold text-destructive">Duplicate detected by AI similarity engine</p>
+            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+              Lead <span className="font-mono font-semibold text-foreground">{activeConflict.lead_id}</span> matches existing record <span className="font-mono font-semibold text-foreground">{activeConflict.matched_lead_id}</span> with a similarity score of <strong className="text-destructive">{Math.round(activeConflict.similarity_score * 100)}%</strong>.
+            </p>
+          </div>
+        </div>
+        <div className="bg-primary-light border border-primary/20 rounded-xl p-4 flex items-center gap-5">
+          <div className="flex-shrink-0 text-center">
+            <p className="text-4xl font-black text-primary">{Math.round(activeConflict.similarity_score * 100)}%</p>
+            <p className="text-xs text-muted-foreground font-medium">Similarity</p>
+          </div>
+          <div>
+            <p className="text-sm font-bold text-foreground">Lead IDs involved in this conflict</p>
+            <p className="text-xs text-muted-foreground mt-1">New: <span className="font-mono text-foreground">{activeConflict.lead_id}</span></p>
+            <p className="text-xs text-muted-foreground">Existing: <span className="font-mono text-foreground">{activeConflict.matched_lead_id}</span></p>
+            <p className="text-xs text-muted-foreground mt-1">Current status: <span className="font-semibold text-foreground">{activeConflict.status}</span></p>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <Button onClick={() => handleAction("merge")} disabled={isActioning} className="flex-1 gradient-primary text-white font-bold gap-2 h-11">
+            {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitMerge className="w-4 h-4" />} Merge Records
+          </Button>
+          <Button onClick={() => handleAction("discard")} disabled={isActioning} variant="outline" className="flex-1 gap-2 h-11 border-destructive/40 text-destructive hover:bg-destructive/5 font-semibold">
+            {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Discard New Lead
+          </Button>
+          <Button onClick={() => handleAction("keep")} disabled={isActioning} variant="outline" className="flex-1 gap-2 h-11 font-semibold">
+            {isActioning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />} Keep Both
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Guard: no conflict at all — or no mock data to fall back to
   if (!duplicateLead) {
     return (
       <div className="p-6 flex flex-col items-center justify-center min-h-[60vh]">
@@ -164,22 +240,22 @@ export default function ConflictResolution() {
           <CheckCircle className="w-8 h-8 text-success" />
         </div>
         <h2 className="text-lg font-semibold text-foreground">No Conflicts to Display</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          {apiConflicts.length > 0
-            ? `${apiConflicts.length} API conflict(s) detected — full detail view requires lead data.`
-            : "All leads are unique. Great work!"}
-        </p>
+        <p className="text-sm text-muted-foreground mt-1">All leads are unique. Great work!</p>
       </div>
     );
   }
 
+  // Build comparison fields dynamically.
+  // When real API lead data is available, use it without any hardcoded highlights.
+  // When falling back to the mock duplicate, keep the original demo highlights.
+  const isRealData = !!apiNewLead;
   const fields = [
-    { label: "Project Name", newVal: duplicateLead.projectName, existingVal: existing.projectName, highlight: "Twin Towers", match: true },
-    { label: "Location", newVal: duplicateLead.location, existingVal: existing.location, highlight: "KLCC", match: true },
-    { label: "Developer", newVal: duplicateLead.developer, existingVal: existing.developer, highlight: "Petronas", match: true },
-    { label: "Value", newVal: formatCurrency(duplicateLead.value), existingVal: formatCurrency(existing.value), highlight: "", match: false },
-    { label: "Stage", newVal: duplicateLead.stage, existingVal: existing.stage, highlight: "", match: false },
-    { label: "Status", newVal: duplicateLead.status, existingVal: existing.status, highlight: "", match: false },
+    { label: "Project Name", newVal: duplicateLead.projectName, existingVal: existing.projectName, highlight: isRealData ? "" : "Twin Towers", match: isRealData ? duplicateLead.projectName === existing.projectName : true },
+    { label: "Location",    newVal: duplicateLead.location,    existingVal: existing.location,    highlight: isRealData ? "" : "KLCC",        match: isRealData ? duplicateLead.location === existing.location : true },
+    { label: "Developer",   newVal: duplicateLead.developer,   existingVal: existing.developer,   highlight: isRealData ? "" : "Petronas",    match: isRealData ? duplicateLead.developer === existing.developer : true },
+    { label: "Value",   newVal: formatCurrency(duplicateLead.value), existingVal: formatCurrency(existing.value), highlight: "", match: false },
+    { label: "Stage",   newVal: duplicateLead.stage,  existingVal: existing.stage,  highlight: "", match: false },
+    { label: "Status",  newVal: duplicateLead.status, existingVal: existing.status, highlight: "", match: false },
     { label: "Created", newVal: duplicateLead.createdDate, existingVal: existing.createdDate, highlight: "", match: false },
   ];
 

@@ -3,7 +3,7 @@ import { TableProperties, Info, LayoutGrid, List } from "lucide-react";
 import { LeadsTable } from "@/components/LeadsTable";
 import { LeadPipeline } from "@/components/LeadPipeline";
 import { SmartDrawer } from "@/components/SmartDrawer";
-import { leads as mockLeads, type Lead } from "@/data/mockData";
+import { type Lead } from "@/data/mockData";
 import { useLeads } from "@/hooks/useLeads";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,8 @@ function formatCurrency(value: number) {
 }
 
 export default function LeadWorkbench() {
-  const { data: leads = mockLeads, isLoading } = useLeads();
+  // All leads flow from the hook — RBAC filtering happens inside useLeads().
+  const { data: leads = [], isLoading } = useLeads();
   const [view, setView] = useState<"list" | "pipeline">("list");
   const [pipelineLead, setPipelineLead] = useState<Lead | null>(null);
 

@@ -16,7 +16,7 @@ Best practices applied:
 
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from dotenv import load_dotenv
@@ -36,6 +36,9 @@ COSMOS_KEY: str = os.environ["AZURE_COSMOS_KEY"]
 DATABASE_NAME: str = os.environ.get("COSMOS_DATABASE_NAME", "SynergyDB")
 CONTAINER_LEADS: str = os.environ.get("COSMOS_CONTAINER_LEADS", "Leads")
 CONTAINER_CONFLICTS: str = os.environ.get("COSMOS_CONTAINER_CONFLICTS", "Conflicts")
+CONTAINER_USERS: str = os.environ.get("COSMOS_CONTAINER_USERS", "Users")
+CONTAINER_ACTIVITIES: str = os.environ.get("COSMOS_CONTAINER_ACTIVITIES", "Activities")
+CONTAINER_AUDIT: str = os.environ.get("COSMOS_CONTAINER_AUDIT", "AuditLogs")
 
 # ---------------------------------------------------------------------------
 # Singleton Cosmos client — created once, reused across all requests.
@@ -62,11 +65,33 @@ _conflicts_container = _database.create_container_if_not_exists(
     offer_throughput=400,
 )
 
+# New containers — Users (partitioned by /email), Activities & AuditLogs (partitioned by /lead_id)
+users_container = _database.create_container_if_not_exists(
+    id=CONTAINER_USERS,
+    partition_key=PartitionKey(path="/email"),
+    offer_throughput=400,
+)
+
+activities_container = _database.create_container_if_not_exists(
+    id=CONTAINER_ACTIVITIES,
+    partition_key=PartitionKey(path="/lead_id"),
+    offer_throughput=400,
+)
+
+audit_container = _database.create_container_if_not_exists(
+    id=CONTAINER_AUDIT,
+    partition_key=PartitionKey(path="/lead_id"),
+    offer_throughput=400,
+)
+
 logger.info(
-    "CosmosDB connected — database='%s', leads='%s', conflicts='%s'",
+    "CosmosDB connected — database='%s', leads='%s', conflicts='%s', users='%s', activities='%s', audit='%s'",
     DATABASE_NAME,
     CONTAINER_LEADS,
     CONTAINER_CONFLICTS,
+    CONTAINER_USERS,
+    CONTAINER_ACTIVITIES,
+    CONTAINER_AUDIT,
 )
 
 
@@ -94,6 +119,34 @@ def save_lead(lead_data: Dict[str, Any]) -> Dict[str, Any]:
         return response
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to save lead id='%s': %s", lead_data.get("id"), exc)
+        raise
+
+def read_lead(lead_id: str) -> Dict[str, Any]:
+    """
+    Point-read a single lead document by its ID (O(1) Cosmos DB RU cost).
+
+    Uses the item id directly as the partition key because the Leads container
+    is partitioned on /id. This is significantly cheaper than a cross-partition
+    query over the entire collection (BUG-M6 fix).
+
+    Args:
+        lead_id: The UUID string of the lead to fetch.
+
+    Returns:
+        The raw Cosmos DB document dict.
+
+    Raises:
+        KeyError: If the document does not exist.
+        azure.cosmos.exceptions.CosmosHttpResponseError on DB failure.
+    """
+    try:
+        item = _leads_container.read_item(item=lead_id, partition_key=lead_id)
+        logger.info("Point-read lead id='%s' from CosmosDB", lead_id)
+        return item
+    except exceptions.CosmosResourceNotFoundError:
+        raise KeyError(f"Lead id='{lead_id}' not found in Cosmos DB.")
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to point-read lead id='%s': %s", lead_id, exc)
         raise
 
 
@@ -155,6 +208,148 @@ def get_all_conflicts() -> List[Dict[str, Any]]:
         )
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch conflicts: %s", exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Users Data Access
+# ---------------------------------------------------------------------------
+
+def save_user(user_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Upsert a user document into the Cosmos DB Users container.
+    The document must contain 'id' and 'email' fields.
+    'email' is the partition key; 'id' is used as the document identifier.
+    """
+    try:
+        response = users_container.upsert_item(body=user_data)
+        logger.info("User upserted — email='%s'", user_data.get("email"))
+        return response
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to save user email='%s': %s", user_data.get("email"), exc)
+        raise
+
+
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """
+    Point-read a user by email address (partition key).
+    Returns None if no matching user is found.
+    """
+    try:
+        results = list(
+            users_container.query_items(
+                query="SELECT * FROM c WHERE c.email = @email",
+                parameters=[{"name": "@email", "value": email}],
+                partition_key=email,
+            )
+        )
+        return results[0] if results else None
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to query user by email='%s': %s", email, exc)
+        raise
+
+
+def count_users() -> int:
+    """
+    Return the total number of documents in the Users container.
+    Used at startup to determine whether demo users need bootstrapping.
+    """
+    try:
+        results = list(
+            users_container.query_items(
+                query="SELECT VALUE COUNT(1) FROM c",
+                enable_cross_partition_query=True,
+            )
+        )
+        return int(results[0]) if results else 0
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to count users: %s", exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Activities Data Access
+# ---------------------------------------------------------------------------
+
+def save_activity(activity_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Upsert an activity document into the Cosmos DB Activities container.
+    Partition key: /lead_id.
+    """
+    try:
+        response = activities_container.upsert_item(body=activity_data)
+        logger.info(
+            "Activity saved — id='%s' lead='%s'",
+            activity_data.get("id"),
+            activity_data.get("lead_id"),
+        )
+        return response
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to save activity: %s", exc)
+        raise
+
+
+def get_activities_by_lead(lead_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch all activities for a given lead, sorted newest-first.
+    Uses a partition-key query (efficient single-partition read).
+    """
+    try:
+        return list(
+            activities_container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.lead_id = @lead_id "
+                    "ORDER BY c.timestamp DESC"
+                ),
+                parameters=[{"name": "@lead_id", "value": lead_id}],
+                partition_key=lead_id,
+            )
+        )
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to fetch activities for lead='%s': %s", lead_id, exc)
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs Data Access
+# ---------------------------------------------------------------------------
+
+def save_audit_log(audit_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Persist an immutable audit log entry to the AuditLogs container.
+    Partition key: /lead_id.
+    """
+    try:
+        response = audit_container.upsert_item(body=audit_data)
+        logger.info(
+            "Audit log saved — id='%s' lead='%s'",
+            audit_data.get("id"),
+            audit_data.get("lead_id"),
+        )
+        return response
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to save audit log: %s", exc)
+        raise
+
+
+def get_audit_logs_by_lead(lead_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch the full change history for a lead, sorted oldest-first.
+    Uses a partition-key query for efficient single-partition read.
+    """
+    try:
+        return list(
+            audit_container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.lead_id = @lead_id "
+                    "ORDER BY c.timestamp ASC"
+                ),
+                parameters=[{"name": "@lead_id", "value": lead_id}],
+                partition_key=lead_id,
+            )
+        )
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to fetch audit logs for lead='%s': %s", lead_id, exc)
         raise
 
 

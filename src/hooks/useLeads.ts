@@ -17,7 +17,8 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient, type AuditLog, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
-import { leads as mockLeads, type Lead } from '@/data/mockData';
+import { leads as mockLeads, mockConflicts, type Lead } from '@/data/mockData';
+import { useAuth } from '@/context/AuthContext';
 
 // ---------------------------------------------------------------------------
 // Query Key Constants
@@ -90,27 +91,29 @@ function adaptAPILead(apiLead: APILead): Lead {
  *   const { data: leads = mockLeads, isLoading } = useLeads();
  */
 export function useLeads() {
+  const { user } = useAuth();
+
+  // RBAC: Admin sees all mock leads; Sales_Rep only sees leads for their BU (exact match).
+  const filteredMock = user?.role === 'Admin'
+    ? mockLeads
+    : mockLeads.filter((lead) => lead.top_match_bu === (user?.bu ?? ''));
+
   return useQuery<Lead[], Error>({
-    queryKey: QUERY_KEYS.leads,
+    queryKey: [...QUERY_KEYS.leads, user?.role ?? 'guest', user?.bu ?? ''],
 
     queryFn: async (): Promise<Lead[]> => {
       try {
         const response = await apiClient.get<APILead[]>('/api/leads');
         const apiLeads: Lead[] = response.data.map(adaptAPILead);
-        // Merge: mock leads first (stable order), real API leads appended.
-        return [...mockLeads, ...apiLeads];
+        return [...filteredMock, ...apiLeads];
       } catch {
-        // Backend unavailable — degrade gracefully to mock data.
-        return [...mockLeads];
+        return [...filteredMock];
       }
     },
 
-    // Always show stale mock data immediately; refresh against API every 60s.
     refetchInterval: 60_000,
     staleTime: 30_000,
-
-    // Seed the cache with mock data so the UI renders instantly on first load.
-    placeholderData: [...mockLeads],
+    placeholderData: [...filteredMock],
   });
 }
 
@@ -168,16 +171,36 @@ export function useCreateLead(options?: {
  *   const { data: conflicts = [], isLoading } = useConflicts();
  */
 export function useConflicts() {
+  const { user } = useAuth();
+
+  // RBAC: Admin sees all mock conflicts; Sales_Rep only sees conflicts for their BU (exact match).
+  const filteredMock = (user?.role === 'Admin'
+    ? mockConflicts
+    : mockConflicts.filter((c) => c.top_match_bu === (user?.bu ?? ''))
+  ).map(({ top_match_bu: _omit, ...rest }) => rest as Conflict);
+
   return useQuery<Conflict[], Error>({
-    queryKey: QUERY_KEYS.conflicts,
+    queryKey: [...QUERY_KEYS.conflicts, user?.role ?? 'guest', user?.bu ?? ''],
 
     queryFn: async (): Promise<Conflict[]> => {
-      const response = await apiClient.get<Conflict[]>('/api/conflicts');
-      return response.data;
+      try {
+        const response = await apiClient.get<Conflict[]>('/api/conflicts');
+        const apiConflicts = response.data;
+        const realPairs = new Set(
+          apiConflicts.map((c) => `${c.lead_id}::${c.matched_lead_id}`),
+        );
+        const dedupedMock = filteredMock.filter(
+          (c) => !realPairs.has(`${c.lead_id}::${c.matched_lead_id}`),
+        );
+        return [...dedupedMock, ...apiConflicts];
+      } catch {
+        return [...filteredMock];
+      }
     },
 
     refetchInterval: 120_000,
     staleTime: 60_000,
+    placeholderData: [...filteredMock],
   });
 }
 
@@ -201,8 +224,11 @@ export function useUpdateLeadStage() {
       const response = await apiClient.patch<APILead>(`/api/leads/${leadId}`, update);
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, { leadId }) => {
+      // Invalidate the leads list so all views (workbench + dashboard) refresh.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      // Invalidate this lead's audit log so the SmartDrawer history tab updates instantly.
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.auditLogs(leadId) });
     },
   });
 }
@@ -306,11 +332,10 @@ export function useResolveConflict() {
       );
       return response.data;
     },
-    onSuccess: (_data, { conflictId }) => {
-      // Optimistic cache pop: remove the just-resolved conflict immediately.
-      queryClient.setQueryData<Conflict[]>(QUERY_KEYS.conflicts, (prev = []) =>
-        prev.filter((c) => c.id !== conflictId),
-      );
+    onSuccess: () => {
+      // Invalidate all conflict cache entries (prefix match handles role/bu variants).
+      // This is more correct than setQueryData since the keyed cache includes role+bu.
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.conflicts });
     },
   });
 }

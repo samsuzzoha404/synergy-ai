@@ -34,12 +34,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import ai_engine
 import database
 from auth import (
-    MOCK_USERS,
     CurrentUser,
     LoginRequest,
     TokenResponse,
+    bootstrap_demo_users,
     create_access_token,
     get_current_user,
+    verify_password,
 )
 from models import AIAnalysis, AuditLog, BulkIngestResponse, ConflictResolutionUpdate, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
 
@@ -60,14 +61,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _vector_cache: List[Dict[str, Any]] = []
 
-# In-memory activities store: { lead_id -> List[LeadActivity] }
-# In production: replace with Cosmos DB 'Activities' container.
-_activities_store: Dict[str, List[Dict[str, Any]]] = {}
-
-# In-memory audit log store: { lead_id -> List[AuditLog] }
-# In production: replace with Cosmos DB 'AuditLogs' container partitioned by lead_id.
-_audit_store: Dict[str, List[Dict[str, Any]]] = {}
-
 DUPLICATE_SIMILARITY_THRESHOLD = 0.92  # Cosine similarity ≥ 0.92 → flag as duplicate
 
 
@@ -83,15 +76,41 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     global _vector_cache
     logger.info("Startup: Hydrating vector cache from Cosmos DB...")
     try:
-        existing_leads = database.get_all_leads()
+        # asyncio.wait_for + asyncio.to_thread ensures:
+        #   1. The blocking Cosmos DB call runs in a thread pool (non-blocking).
+        #   2. If Cosmos DB is unreachable or slow, startup aborts after 15 s
+        #      instead of hanging indefinitely (which caused uvicorn to accept
+        #      TCP connections but never process requests — BUG-STARTUP).
+        existing_leads = await asyncio.wait_for(
+            asyncio.to_thread(database.get_all_leads),
+            timeout=15.0,
+        )
         for doc in existing_leads:
             lead_id = doc.get("id")
             vector = doc.get("vector", [])
             if lead_id and vector:
                 _vector_cache.append({"id": lead_id, "vector": vector})
         logger.info("Vector cache hydrated — %d leads loaded.", len(_vector_cache))
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Vector cache hydration timed out (>15 s) — "
+            "starting with empty cache. Duplicate detection will still work "
+            "for leads ingested in this session."
+        )
     except Exception as exc:
         logger.warning("Could not hydrate vector cache on startup: %s", exc)
+
+    # Seed demo users if the Users container is empty (first-time startup).
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(bootstrap_demo_users),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Demo user bootstrap timed out — will retry on next restart.")
+    except Exception as exc:
+        logger.warning("Demo user bootstrap error: %s", exc)
+
     yield
     # Shutdown — nothing to clean up for this service
     logger.info("Shutdown complete.")
@@ -191,14 +210,15 @@ def _check_duplicate(new_vector: List[float], new_id: str) -> bool:
 )
 def login(payload: LoginRequest) -> TokenResponse:
     """
-    Validates credentials against the hardcoded MOCK_USERS dict (hackathon).
-    In production: query Cosmos DB 'Users' container + compare bcrypt hash.
+    Validates credentials against the Cosmos DB Users container.
+    Passwords are compared using bcrypt (never stored in plaintext).
 
     Returns:
         TokenResponse — JWT access token + user profile object.
     """
-    user = MOCK_USERS.get(payload.email.lower())
-    if not user or user["password"] != payload.password:
+    # Query the Users container for this email address
+    user = database.get_user_by_email(payload.email.lower())
+    if user is None or not verify_password(payload.password, user.get("hashed_password", "")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
@@ -207,13 +227,13 @@ def login(payload: LoginRequest) -> TokenResponse:
         "sub": user["email"],
         "name": user["name"],
         "role": user["role"],
-        "bu": user["bu"],
+        "bu": user.get("bu"),
     })
     user_profile = {
         "email": user["email"],
         "name": user["name"],
         "role": user["role"],
-        "bu": user["bu"],
+        "bu": user.get("bu"),
     }
     logger.info("Login successful — user='%s' role='%s'", user["email"], user["role"])
     return TokenResponse(access_token=token, user=user_profile)
@@ -356,9 +376,14 @@ async def bulk_ingest_leads(
 
     Returns a summary: total imported, total flagged as duplicates, errors.
     """
-    # --- Guard: only CSV and XLSX-as-CSV files accepted ---
+    # --- Guard: only CSV files accepted (.xlsx cannot be parsed as CSV) ---
     filename = file.filename or ""
-    if not (filename.lower().endswith(".csv") or filename.lower().endswith(".xlsx")):
+    if filename.lower().endswith(".xlsx"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only CSV files are supported for bulk ingestion. Please export your data as CSV (.csv) and re-upload.",
+        )
+    if not filename.lower().endswith(".csv"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Only .csv files are supported for bulk upload. Please export your BCI data as CSV.",
@@ -519,20 +544,52 @@ def get_conflicts(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
     """
-    Returns all conflict documents for the ConflictResolution dashboard.
+    Returns conflict documents for the ConflictResolution dashboard.
     Each document contains the two lead IDs and their similarity score.
-    Requires a valid JWT — Admin sees all; Sales_Rep sees conflicts for their BU only.
+    Requires a valid JWT.
+
+    RBAC filtering:
+      • Admin    → all conflicts returned.
+      • Sales_Rep → only conflicts where at least one of the referenced leads
+                    has a top_match_bu that matches the user's BU.
     """
     try:
         conflicts = database.get_all_conflicts()
         # Strip Cosmos internal metadata fields before returning
-        return [{k: v for k, v in c.items() if not k.startswith("_")} for c in conflicts]
+        clean = [{k: v for k, v in c.items() if not k.startswith("_")} for c in conflicts]
     except Exception as exc:
         logger.error("Failed to fetch conflicts: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database read error: {exc}",
         )
+
+    # Admin: return everything unfiltered.
+    if current_user.role == "Admin" or not current_user.bu:
+        return clean
+
+    # Sales_Rep: resolve which lead IDs belong to their BU, then filter conflicts.
+    try:
+        all_leads = database.get_all_leads()
+        bu_lower = current_user.bu.lower()
+        bu_lead_ids: set = {
+            doc.get("id")
+            for doc in all_leads
+            if bu_lower in (
+                (doc.get("ai_analysis") or {}).get("top_match_bu", "")
+            ).lower()
+        }
+        return [
+            c for c in clean
+            if c.get("lead_id") in bu_lead_ids or c.get("matched_lead_id") in bu_lead_ids
+        ]
+    except Exception as exc:
+        # If lead lookup fails, log and return unfiltered rather than breaking the UI.
+        logger.warning(
+            "BU conflict filtering failed for '%s', returning all: %s",
+            current_user.email, exc,
+        )
+        return clean
 
 
 # ---------------------------------------------------------------------------
@@ -610,29 +667,27 @@ async def patch_lead(
     Phase-2 addition: Auto-generates an AuditLog entry for every field changed.
     Only fields explicitly set in the payload are modified; all others are unchanged.
     """
+    # BUG-M6 fix: use a Cosmos DB point-read (O(1)) instead of fetching all
+    # leads and scanning linearly (O(n)). read_item() uses the partition key
+    # directly, costing a single RU vs (n * RU) for a full collection scan.
     try:
-        all_docs = await asyncio.to_thread(database.get_all_leads)
+        target_doc = await asyncio.to_thread(database.read_lead, lead_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lead '{lead_id}' not found.",
+        )
     except Exception as exc:
-        logger.error("Failed to fetch leads for PATCH: %s", exc)
+        logger.error("Failed to read lead '%s' for PATCH: %s", lead_id, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database read error: {exc}",
         )
 
-    target_doc = next((d for d in all_docs if d.get("id") == lead_id), None)
-    if target_doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Lead '{lead_id}' not found.",
-        )
-
     # Apply only the provided (non-None) fields and capture old values for audit
     update_data = payload.model_dump(exclude_none=True)
 
-    # --- Generate audit log entries for every changed field ---
-    if lead_id not in _audit_store:
-        _audit_store[lead_id] = []
-
+    # --- Persist audit log entries to Cosmos DB for every changed field ---
     for field_name, new_val in update_data.items():
         old_val = target_doc.get(field_name, "")
         if str(old_val) != str(new_val):  # only log actual changes
@@ -650,7 +705,12 @@ async def patch_lead(
                 previous_value=str(old_val),
                 new_value=str(new_val),
             )
-            _audit_store[lead_id].append(audit_entry.model_dump())
+            audit_doc = audit_entry.model_dump()
+            audit_doc["id"] = str(uuid.uuid4())  # Cosmos DB requires a top-level 'id'
+            try:
+                database.save_audit_log(audit_doc)
+            except Exception as audit_exc:
+                logger.warning("Failed to persist audit log: %s", audit_exc)
             logger.info(
                 "Audit — lead='%s' field='%s' '%s'→'%s' by '%s'",
                 lead_id, field_name, old_val, new_val, current_user.email,
@@ -688,11 +748,18 @@ def get_activities(
 ) -> List[LeadActivity]:
     """
     Returns all logged activities (notes, calls, emails, system events) for a lead,
-    sorted with the most recent entry last so the frontend timeline reads top-to-bottom.
+    sorted newest-first (ORDER BY timestamp DESC in the Cosmos DB query).
     Requires a valid JWT.
     """
-    raw = _activities_store.get(lead_id, [])
-    return [LeadActivity(**a) for a in raw]
+    try:
+        raw = database.get_activities_by_lead(lead_id)
+        return [LeadActivity(**{k: v for k, v in a.items() if not k.startswith("_")}) for a in raw]
+    except Exception as exc:
+        logger.error("Failed to fetch activities for lead='%s': %s", lead_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database read error: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -711,24 +778,26 @@ def create_activity(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> LeadActivity:
     """
-    Appends a new activity to the in-memory activity log for the given lead.
+    Persists a new activity to the Cosmos DB Activities container.
     The system auto-stamps the UTC timestamp and generates a UUID for the entry.
-    Stamped with the authenticated user's name from the JWT so the caller
-    cannot spoof a different user's name.
-
-    In production, persist to a Cosmos DB 'Activities' container
-    partitioned by lead_id for efficient per-lead retrieval.
+    user_name is sourced from the authenticated JWT (cannot be spoofed by the caller).
     """
     new_activity = LeadActivity(
         lead_id=lead_id,
-        # Use the authenticated user's real name from JWT (overrides payload)
         user_name=current_user.name,
         activity_type=payload.activity_type,
         content=payload.content,
     )
-    if lead_id not in _activities_store:
-        _activities_store[lead_id] = []
-    _activities_store[lead_id].append(new_activity.model_dump())
+    activity_doc = new_activity.model_dump()
+    activity_doc["id"] = str(uuid.uuid4())  # Cosmos DB requires a top-level 'id'
+    try:
+        database.save_activity(activity_doc)
+    except Exception as exc:
+        logger.error("Failed to persist activity for lead='%s': %s", lead_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database write error: {exc}",
+        )
     logger.info(
         "Activity logged — lead='%s' type='%s' user='%s'",
         lead_id, new_activity.activity_type, new_activity.user_name,
@@ -752,12 +821,18 @@ def get_audit_logs(
 ) -> List[AuditLog]:
     """
     Returns all audit log entries for the given lead, sorted oldest-first
-    so the frontend timeline reads top-to-bottom chronologically.
-
-    In production: query Cosmos DB 'AuditLogs' container partitioned by lead_id.
+    (ORDER BY timestamp ASC) so the timeline reads top-to-bottom chronologically.
+    Reads from Cosmos DB AuditLogs container partitioned by lead_id.
     """
-    raw = _audit_store.get(lead_id, [])
-    return [AuditLog(**entry) for entry in raw]
+    try:
+        raw = database.get_audit_logs_by_lead(lead_id)
+        return [AuditLog(**{k: v for k, v in entry.items() if not k.startswith("_")}) for entry in raw]
+    except Exception as exc:
+        logger.error("Failed to fetch audit logs for lead='%s': %s", lead_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database read error: {exc}",
+        )
 
 
 # NOTE: Startup logic has been moved to the `lifespan` context manager above.

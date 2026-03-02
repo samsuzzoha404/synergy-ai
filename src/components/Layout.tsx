@@ -6,6 +6,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { notifications } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
+import { useAuth } from "@/context/AuthContext";
 
 export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -13,11 +14,14 @@ export function Layout() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
 
   const unread = notifications.filter((n) => !n.read).length;
 
+  // BUG-C2 fix: call logout() to clear token + localStorage, then navigate.
   const handleLogout = () => {
     setUserMenuOpen(false);
+    logout();
     navigate("/auth");
   };
 
@@ -142,11 +146,13 @@ export function Layout() {
                 className="flex items-center gap-2 rounded-lg hover:bg-muted px-2 py-1.5 transition-colors"
               >
                 <div className="w-7 h-7 rounded-full gradient-primary flex items-center justify-center flex-shrink-0 ring-2 ring-primary/20">
-                  <span className="text-white text-xs font-bold">MY</span>
+                  <span className="text-white text-xs font-bold">
+                    {user?.name ? user.name.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase() : 'U'}
+                  </span>
                 </div>
                 <div className="hidden md:block text-left">
-                  <p className="text-sm font-semibold text-foreground leading-tight">Marvis Yeoh</p>
-                  <p className="text-xs text-muted-foreground leading-tight">Group CFO</p>
+                  <p className="text-sm font-semibold text-foreground leading-tight">{user?.name || 'User'}</p>
+                  <p className="text-xs text-muted-foreground leading-tight">{user?.role || 'Guest'}</p>
                 </div>
                 <ChevronDown className={cn("hidden md:block w-3.5 h-3.5 text-muted-foreground transition-transform duration-200", userMenuOpen && "rotate-180")} />
               </button>
@@ -168,11 +174,11 @@ export function Layout() {
                       transition={{ duration: 0.15 }}
                       className="absolute right-0 top-full mt-2 w-56 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
                     >
-                      {/* User info header */}
+                      {/* User info header — populated from JWT via useAuth (BUG-C3 fix) */}
                       <div className="px-4 py-3 border-b border-border">
-                        <p className="text-sm font-semibold text-foreground">Marvis Yeoh</p>
-                        <p className="text-xs text-muted-foreground">marvis.yeoh@chinhin.com</p>
-                        <span className="inline-block mt-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">Group CFO</span>
+                        <p className="text-sm font-semibold text-foreground">{user?.name || 'User'}</p>
+                        <p className="text-xs text-muted-foreground">{user?.email || ''}</p>
+                        <span className="inline-block mt-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">{user?.role || 'Guest'}</span>
                       </div>
 
                       {/* Menu items */}

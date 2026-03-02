@@ -165,7 +165,7 @@ class LeadUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 5. Lead Activity / Notes (in-memory for MVP; swap to Cosmos DB later)
+# 5. Lead Activity / Notes (persisted to Cosmos DB 'Activities' container)
 # ---------------------------------------------------------------------------
 class ActivityType(str, enum.Enum):
     """Valid activity type values for LeadActivity."""
@@ -228,7 +228,7 @@ class AuditLog(BaseModel):
     """
     An immutable record of a change made to a lead document.
     Generated automatically whenever a PATCH operation modifies stage/status.
-    Stored in the in-memory _audit_store (swap to Cosmos DB 'AuditLogs' in prod).
+    Persisted to the Cosmos DB 'AuditLogs' container, partitioned by /lead_id.
     """
 
     id: str = Field(

@@ -7,29 +7,47 @@ Key exports:
   create_access_token(data)  — Signs and returns a JWT string.
   verify_token(token)        — Decodes the JWT; raises 401 on failure.
   get_current_user           — FastAPI Depends() callable; injects CurrentUser.
+  verify_password(plain, h)  — bcrypt comparison of a plaintext password to its hash.
+  get_password_hash(pw)      — Returns a bcrypt hash of the given plaintext password.
+  bootstrap_demo_users()     — Seeds Cosmos DB Users container on first startup.
   LoginRequest               — Pydantic schema for POST /api/auth/login body.
   TokenResponse              — Pydantic schema for the login success response.
 
-Demo users (hardcoded for hackathon):
+Authentication flow:
+  1. POST /api/auth/login:  query Cosmos DB Users container by email.
+  2. verify_password():     compare the submitted password to the stored bcrypt hash.
+  3. create_access_token(): sign a JWT embedding sub/name/role/bu claims.
+  4. Frontend stores the JWT and sends it as a Bearer token on every subsequent request.
+
+Demo accounts (created automatically on first startup via bootstrap_demo_users):
   marvis@chinhin.com  / admin123   → Role: Admin      (sees ALL leads)
   sales@stucken.com   / sales123   → Role: Sales_Rep  (sees Stucken AAC leads only)
+  … plus 6 more BU-specific Sales_Rep accounts.
 
-In production:
+Production considerations:
   • Replace SECRET_KEY with a vault-managed secret (Azure Key Vault).
-  • Replace MOCK_USERS with Cosmos DB 'Users' container lookup.
   • Add refresh-token endpoint and short-lived access tokens.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel
+
+# Load environment variables from .env (same pattern as ai_engine.py / database.py)
+load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -43,27 +61,68 @@ SECRET_KEY: str = os.environ.get(
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8-hour sessions for demo convenience
 
+# ---------------------------------------------------------------------------
+# Password hashing — bcrypt via passlib
+# ---------------------------------------------------------------------------
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def get_password_hash(password: str) -> str:
+    """Return a bcrypt hash of the given plaintext password."""
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Return True if plain_password matches the stored bcrypt hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
 
 # ---------------------------------------------------------------------------
-# Hardcoded demo users
-# In production: query the Cosmos DB 'Users' container.
+# Demo user definitions (used ONLY by bootstrap_demo_users at first startup).
+# Passwords are hashed before being written to Cosmos DB.
 # ---------------------------------------------------------------------------
-MOCK_USERS: Dict[str, Dict[str, Any]] = {
-    "marvis@chinhin.com": {
-        "email": "marvis@chinhin.com",
-        "name": "Marvis Tan",
-        "role": "Admin",
-        "bu": None,           # Admin sees across all BUs
-        "password": "admin123",
-    },
-    "sales@stucken.com": {
-        "email": "sales@stucken.com",
-        "name": "Ahmad Razif",
-        "role": "Sales_Rep",
-        "bu": "Stucken AAC",  # Sees only leads matched to this BU
-        "password": "sales123",
-    },
-}
+_DEMO_USERS: list[Dict[str, Any]] = [
+    {"email": "marvis@chinhin.com",  "name": "Marvis Chin",                    "role": "Admin",    "bu": None,                    "password": "admin123"},
+    {"email": "sales@stucken.com",   "name": "Sales Rep (Stucken AAC)",         "role": "Sales_Rep","bu": "Stucken AAC",            "password": "sales123"},
+    {"email": "sales@ajiya.com",     "name": "Sales Rep (Ajiya Metal/Glass)",   "role": "Sales_Rep","bu": "Ajiya Metal / Glass",    "password": "sales123"},
+    {"email": "sales@gcast.com",     "name": "Sales Rep (G-Cast)",              "role": "Sales_Rep","bu": "G-Cast",                 "password": "sales123"},
+    {"email": "sales@signature.com", "name": "Sales Rep (Signature Alliance)",  "role": "Sales_Rep","bu": "Signature Alliance",     "password": "sales123"},
+    {"email": "sales@kitchen.com",   "name": "Sales Rep (Signature Kitchen)",   "role": "Sales_Rep","bu": "Signature Kitchen",      "password": "sales123"},
+    {"email": "sales@fiamma.com",    "name": "Sales Rep (Fiamma Holding)",      "role": "Sales_Rep","bu": "Fiamma Holding",         "password": "sales123"},
+    {"email": "sales@ppghing.com",   "name": "Sales Rep (PPG Hing)",            "role": "Sales_Rep","bu": "PPG Hing",               "password": "sales123"},
+]
+
+
+def bootstrap_demo_users() -> None:
+    """
+    Seed the Cosmos DB Users container with the 8 hackathon demo accounts.
+
+    Called once during server startup (inside the lifespan context manager).
+    If the container already contains at least one user document, this function
+    is a no-op — it never overwrites existing production data.
+
+    Passwords are bcrypt-hashed before being persisted; plaintext is never stored.
+    """
+    import database  # local import to avoid circular dependency at module level
+
+    try:
+        if database.count_users() > 0:
+            logger.info("Users container already populated — skipping bootstrap.")
+            return
+        for demo in _DEMO_USERS:
+            doc: Dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "email": demo["email"],
+                "name": demo["name"],
+                "role": demo["role"],
+                "bu": demo["bu"],
+                "hashed_password": get_password_hash(demo["password"]),
+            }
+            database.save_user(doc)
+            logger.info("Bootstrapped demo user — email='%s' role='%s'", doc["email"], doc["role"])
+        logger.info("Demo user bootstrap complete — %d users seeded.", len(_DEMO_USERS))
+    except Exception as exc:
+        logger.error("Demo user bootstrap failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
