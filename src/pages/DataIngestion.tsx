@@ -24,7 +24,7 @@ interface FormData {
 }
 
 const PIPELINE_STEPS = [
-  { icon: Upload, label: "File Upload", desc: "CSV / XLSX parsed" },
+  { icon: Upload, label: "File Upload", desc: "CSV parsed" },
   { icon: Cpu, label: "AI Scoring", desc: "BU match computed" },
   { icon: Database, label: "Stored", desc: "Lead saved to DB" },
   { icon: BarChart3, label: "Dashboard", desc: "KPIs updated" },
@@ -51,10 +51,10 @@ export default function DataIngestion() {
     e.preventDefault();
     setDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (file && (file.name.endsWith(".csv") || file.name.endsWith(".xlsx"))) {
+    if (file && file.name.endsWith(".csv")) {
       processFile(file);
     } else {
-      toast({ title: "Invalid file type", description: "Please upload a CSV or XLSX file.", variant: "destructive" });
+      toast({ title: "Unsupported file type", description: "Only .csv files are supported for bulk ingestion.", variant: "destructive" });
     }
   };
 
@@ -182,7 +182,7 @@ export default function DataIngestion() {
                 <FileText className="w-4 h-4 text-primary" />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-foreground">BCI CSV / XLSX Upload</h2>
+                <h2 className="text-sm font-semibold text-foreground">BCI CSV Upload</h2>
                 <p className="text-xs text-muted-foreground">Drag & drop or click to browse</p>
               </div>
             </div>
@@ -208,7 +208,7 @@ export default function DataIngestion() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".csv,.xlsx"
+                    accept=".csv"
                     className="hidden"
                     onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0])}
                   />
@@ -221,7 +221,7 @@ export default function DataIngestion() {
                   <p className="text-sm font-bold text-foreground mb-1">
                     {dragOver ? "Release to upload" : "Drag & drop your BCI export here"}
                   </p>
-                  <p className="text-xs text-muted-foreground mb-4">CSV, XLSX supported · Max 50MB</p>
+                  <p className="text-xs text-muted-foreground mb-4">CSV files only · Max 50MB</p>
                   <Button variant="outline" size="sm" className="pointer-events-none">
                     Browse Files
                   </Button>

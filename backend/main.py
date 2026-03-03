@@ -23,6 +23,7 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -133,12 +134,16 @@ app = FastAPI(
 
 # ---------------------------------------------------------------------------
 # CORS Middleware
-# Allow all origins during development. RESTRICT in production.
-# Production example: allow_origins=["https://synergy.chinhin.com.my"]
+# Read allowed origins from ALLOWED_ORIGINS env var (comma-separated).
+# Falls back to "*" only when the variable is absent (local dev convenience).
+# Production example: ALLOWED_ORIGINS=https://synergy.chinhin.com.my
 # ---------------------------------------------------------------------------
+_raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+_allowed_origins: list = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # ⚠️  Restrict this before production deploy
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

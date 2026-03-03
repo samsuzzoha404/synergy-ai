@@ -2,13 +2,17 @@
  * LeadPipeline.tsx — Kanban Board for Pipeline View
  * ===================================================
  * Renders leads grouped by LeadStage columns with drag-and-drop reordering
- * powered by @dnd-kit. On drop, calls PATCH /api/leads/{id} via TanStack Query
- * and invalidates the leads cache so all views stay in sync.
+ * powered by @dnd-kit (Multiple Containers pattern). On drop, calls
+ * PATCH /api/leads/{id} via TanStack Query and updates the local cache so
+ * all views stay in sync.
+ *
+ * Architecture: each column is a useDroppable container + SortableContext.
+ * The root DndContext coordinates cross-column movement via onDragOver.
  *
  * Columns: Planning → Tender → Construction → Completed
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -16,14 +20,16 @@ import {
   DragOverlay,
   DragStartEvent,
   PointerSensor,
+  TouchSensor,
   closestCorners,
+  useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
 import {
   SortableContext,
   useSortable,
-  verticalListSortingStrategy,
+  rectSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, DollarSign, Brain } from "lucide-react";
@@ -31,7 +37,6 @@ import { Lead, LeadStage } from "@/data/mockData";
 import { useUpdateLeadStage } from "@/hooks/useLeads";
 import { cn } from "@/lib/utils";
 import { MatchScoreBadge } from "@/components/StatusBadge";
-import { toast } from "@/hooks/use-toast";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,9 +62,11 @@ interface LeadCardProps {
   lead: Lead;
   onClick: (lead: Lead) => void;
   isDragging?: boolean;
+  /** When true the click handler is suppressed (drag just ended). */
+  suppressClick?: boolean;
 }
 
-function LeadCard({ lead, onClick, isDragging = false }: LeadCardProps) {
+function LeadCard({ lead, onClick, isDragging = false, suppressClick = false }: LeadCardProps) {
   const {
     attributes,
     listeners,
@@ -85,9 +92,9 @@ function LeadCard({ lead, onClick, isDragging = false }: LeadCardProps) {
         "hover:border-primary/30 hover:shadow-sm transition-all duration-150",
         (sortableDragging || isDragging) && "opacity-40 shadow-xl ring-2 ring-primary/30",
       )}
-      onClick={() => onClick(lead)}
+      onClick={() => { if (!suppressClick) onClick(lead); }}
     >
-      {/* Drag handle + project name row */}
+      {/* Drag handle — listeners bound here only, not on the whole card */}
       <div className="flex items-start gap-2">
         <div
           {...attributes}
@@ -128,17 +135,22 @@ function LeadCard({ lead, onClick, isDragging = false }: LeadCardProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Column
+// Column — each column is a registered @dnd-kit droppable container
 // ---------------------------------------------------------------------------
 interface ColumnProps {
   stage: LeadStage;
   leads: Lead[];
   onCardClick: (lead: Lead) => void;
+  suppressClick: boolean;
 }
 
-function KanbanColumn({ stage, leads, onCardClick }: ColumnProps) {
+function KanbanColumn({ stage, leads, onCardClick, suppressClick }: ColumnProps) {
   const meta = STAGE_META[stage];
   const totalValue = leads.reduce((s, l) => s + l.value, 0);
+
+  // Register this column as a droppable target so @dnd-kit can detect
+  // cross-column and empty-column drops via the collision algorithm.
+  const { setNodeRef, isOver } = useDroppable({ id: stage });
 
   return (
     <div className="flex flex-col min-w-[260px] max-w-[300px] flex-1">
@@ -160,11 +172,24 @@ function KanbanColumn({ stage, leads, onCardClick }: ColumnProps) {
         )}
       </div>
 
-      {/* Droppable cards */}
-      <SortableContext items={leads.map((l) => l.id)} strategy={verticalListSortingStrategy}>
-        <div className="flex flex-col gap-2.5 flex-1 min-h-[120px] rounded-xl p-1">
+      {/* Droppable + sortable cards area.
+          setNodeRef makes this div the drop target for the stage column.
+          rectSortingStrategy handles 2-D / multi-container positioning correctly. */}
+      <SortableContext items={leads.map((l) => l.id)} strategy={rectSortingStrategy}>
+        <div
+          ref={setNodeRef}
+          className={cn(
+            "flex flex-col gap-2.5 flex-1 min-h-[120px] rounded-xl p-1 transition-colors duration-150",
+            isOver && "bg-primary/5 ring-1 ring-primary/20",
+          )}
+        >
           {leads.map((lead) => (
-            <LeadCard key={lead.id} lead={lead} onClick={onCardClick} />
+            <LeadCard
+              key={lead.id}
+              lead={lead}
+              onClick={onCardClick}
+              suppressClick={suppressClick}
+            />
           ))}
           {leads.length === 0 && (
             <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground/60">
@@ -188,16 +213,30 @@ interface LeadPipelineProps {
 export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
   const { mutate: moveStage } = useUpdateLeadStage();
 
-  // Local optimistic copy of leads so the board updates instantly on drop.
+  // Optimistic local copy — updated immediately on drag so the UI feels instant.
   const [localLeads, setLocalLeads] = useState<Lead[]>(leads);
+
+  // ID of the card currently being dragged (null when idle).
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Sync localLeads when parent data refreshes (e.g., after TanStack Query revalidation).
-  // Must be useEffect — setState inside useMemo is a React anti-pattern that causes
-  // extra renders and Strict Mode double-invocation warnings.
-  useEffect(() => {
+  // wasDragging: set to true the moment a drag completes, cleared on the next
+  // event loop tick. The LeadCard onClick guard reads this to prevent the
+  // pointerup→click sequence from opening the SmartDrawer after a drag.
+  const wasDragging = useRef(false);
+
+  // Sync localLeads from the server-truth `leads` prop ONLY while not dragging.
+  // Doing this during an active drag would overwrite our optimistic stage moves.
+  // We skip the sync while activeId is set (drag in progress) so the board
+  // position stays stable mid-flight. After the drag ends, activeId is null and
+  // the mutation's setQueriesData already updated the cache to the new stage, so
+  // the next sync lands cleanly on the correct final state.
+  const leadsRef = useRef(leads);
+  leadsRef.current = leads;
+  if (activeId === null && localLeads !== leads) {
+    // Synchronous state update during render — safe in React 18 when the
+    // condition is referentially stable (leads identity changes only on fetch).
     setLocalLeads(leads);
-  }, [leads]);
+  }
 
   const activeLead = useMemo(
     () => localLeads.find((l) => l.id === activeId) ?? null,
@@ -215,31 +254,41 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
     return map;
   }, [localLeads]);
 
+  // PointerSensor: distance:5 means small taps don't accidentally start a drag.
+  // TouchSensor: delay:250 + tolerance:5 gives mobile users time to scroll before
+  // the board claims the touch gesture as a drag.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
   );
 
   function handleDragStart({ active }: DragStartEvent) {
     setActiveId(String(active.id));
+    wasDragging.current = false;
   }
 
   function handleDragOver({ active, over }: DragOverEvent) {
     if (!over) return;
+    const activeLeadId = String(active.id);
     const overId = String(over.id);
+    if (activeLeadId === overId) return;
 
-    // Determine target stage: either a column id (stage name) or another card's stage
-    const targetStage =
-      (STAGES as string[]).includes(overId)
-        ? (overId as LeadStage)
-        : (localLeads.find((l) => l.id === overId)?.stage ?? null);
+    // Resolve target stage: over can be a column droppable (stage name)
+    // OR another card — in which case we read that card's current stage.
+    const isOverColumn = (STAGES as string[]).includes(overId);
+    const targetStage: LeadStage | null = isOverColumn
+      ? (overId as LeadStage)
+      : (localLeads.find((l) => l.id === overId)?.stage ?? null);
 
     if (!targetStage) return;
-    const activeStage = localLeads.find((l) => l.id === String(active.id))?.stage;
+
+    const activeStage = localLeads.find((l) => l.id === activeLeadId)?.stage;
     if (activeStage === targetStage) return;
 
-    // Optimistic update
+    // Immediately move the card to the target stage in local state so the
+    // column re-renders with the card in the right place while dragging.
     setLocalLeads((prev) =>
-      prev.map((l) => (l.id === String(active.id) ? { ...l, stage: targetStage } : l)),
+      prev.map((l) => (l.id === activeLeadId ? { ...l, stage: targetStage } : l)),
     );
   }
 
@@ -247,28 +296,33 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
     const leadId = String(active.id);
     setActiveId(null);
 
-    if (!over) return;
-    const overId = String(over.id);
-    const newStage =
-      (STAGES as string[]).includes(overId)
-        ? (overId as LeadStage)
-        : (localLeads.find((l) => l.id === overId)?.stage ?? null);
+    // Mark that a drag just happened so the card's onClick is suppressed.
+    wasDragging.current = true;
+    setTimeout(() => { wasDragging.current = false; }, 0);
 
-    if (!newStage) return;
-
-    // BUG-M7 fix: mock leads (IDs starting with "L00") don't exist in Cosmos DB.
-    // Calling PATCH for them returns 404. Update local state only and inform the user.
-    if (leadId.startsWith("L00")) {
-      toast({
-        title: "Cannot update stage of a demo lead",
-        description: "Mock demo leads are read-only. Ingest a real lead via Data Ingestion to use the Kanban board.",
-        variant: "destructive",
-        duration: 4000,
-      });
+    if (!over) {
+      // Dropped outside any droppable — revert to server truth.
+      setLocalLeads(leadsRef.current);
       return;
     }
 
-    // Persist via PATCH for real API leads only
+    const overId = String(over.id);
+    const isOverColumn = (STAGES as string[]).includes(overId);
+    const newStage: LeadStage | null = isOverColumn
+      ? (overId as LeadStage)
+      : (localLeads.find((l) => l.id === overId)?.stage ?? null);
+
+    if (!newStage) {
+      setLocalLeads(leadsRef.current);
+      return;
+    }
+
+    // Compare against the *original* server stage, not the optimistic one,
+    // to skip a mutation when the card was returned to its starting column.
+    const originalStage = leadsRef.current.find((l) => l.id === leadId)?.stage;
+    if (newStage === originalStage) return;
+
+    // Delegate to the hook — it distinguishes mock vs real leads internally.
     moveStage({ leadId, update: { stage: newStage } });
   }
 
@@ -287,6 +341,7 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
             stage={stage}
             leads={byStage[stage]}
             onCardClick={onLeadClick}
+            suppressClick={wasDragging.current}
           />
         ))}
       </div>
@@ -294,7 +349,7 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
       {/* Drag overlay — floating card while dragging */}
       <DragOverlay>
         {activeLead ? (
-          <LeadCard lead={activeLead} onClick={() => {}} isDragging />
+          <LeadCard lead={activeLead} onClick={() => {}} isDragging suppressClick />
         ) : null}
       </DragOverlay>
     </DndContext>

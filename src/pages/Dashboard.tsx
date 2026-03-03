@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Users, Target, Clock, AlertCircle, BarChart3, PieChart, ArrowUpRight,
@@ -9,7 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart as RechartsPie, Pie, Cell, AreaChart, Area, LabelList, Legend,
 } from "recharts";
-import { kpiData, leadsbyBU, projectStageData, recentActivity } from "@/data/mockData";
+import { kpiData } from "@/data/mockData";
 import { KPICard } from "@/components/KPICard";
 import { StatusBadge, MatchScoreBadge } from "@/components/StatusBadge";
 import { SmartDrawer } from "@/components/SmartDrawer";
@@ -59,6 +59,24 @@ const CustomBarTooltip = ({ active, payload, label }: CustomBarTooltipProps) => 
     );
   }
   return null;
+};
+
+// ── Static sample data ─────────────────────────────────────────────────────
+// recentActivity is a static sample feed (no real-time activity endpoint yet).
+// Labelled clearly in the UI so reviewers know it is not live data.
+const recentActivity = [
+  { id: 1, action: "Lead assigned", detail: "Avantro Residences → Stucken", time: "2 mins ago", type: "assign" },
+  { id: 2, action: "Duplicate detected", detail: "Twin Towers Reno flagged", time: "18 mins ago", type: "alert" },
+  { id: 3, action: "New lead ingested", detail: "Putrajaya Federal Complex", time: "1 hr ago", type: "new" },
+  { id: 4, action: "Lead won", detail: "KL Eco City Tower C — RM 175M", time: "3 hrs ago", type: "win" },
+  { id: 5, action: "CSV uploaded", detail: "BCI_June2025_export.csv — 127 leads", time: "5 hrs ago", type: "upload" },
+];
+
+const STAGE_COLORS: Record<string, string> = {
+  Planning:     "hsl(217, 91%, 50%)",
+  Tender:       "hsl(199, 89%, 48%)",
+  Construction: "hsl(262, 80%, 56%)",
+  Completed:    "hsl(142, 76%, 36%)",
 };
 
 const trendData = [
@@ -133,6 +151,32 @@ export default function Dashboard() {
       accent: "bg-warning",
     },
   ];
+
+  // ── Chart data computed from live leads ──────────────────────────────────
+  // Pie chart: count leads per pipeline stage
+  const projectStageData = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const l of leads) counts.set(l.stage, (counts.get(l.stage) ?? 0) + 1);
+    return ["Planning", "Tender", "Construction", "Completed"].map((stage) => ({
+      stage,
+      count: counts.get(stage) ?? 0,
+      color: STAGE_COLORS[stage],
+    }));
+  }, [leads]);
+
+  // Bar chart: group leads by top BU match, sum value in RM Millions
+  const leadsbyBU = useMemo(() => {
+    const buMap = new Map<string, { leads: number; value: number }>();
+    for (const l of leads) {
+      const bu = l.matches[0]?.bu ?? (l as { top_match_bu?: string }).top_match_bu ?? "Unknown";
+      const existing = buMap.get(bu) ?? { leads: 0, value: 0 };
+      buMap.set(bu, { leads: existing.leads + 1, value: existing.value + Math.round(l.value / 1_000_000) });
+    }
+    return Array.from(buMap.entries())
+      .map(([bu, data]) => ({ bu, ...data }))
+      .sort((a, b) => b.leads - a.leads)
+      .slice(0, 7);
+  }, [leads]);
 
   // Sum stage totals dynamically so the legend bars always add up correctly
   const stageTotal = projectStageData.reduce((s, d) => s + d.count, 0);
@@ -289,7 +333,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-sm font-semibold text-foreground">Recent Activity</h2>
-                <p className="text-xs text-muted-foreground">System event log</p>
+                <p className="text-xs text-muted-foreground">Sample Feed · not live data</p>
               </div>
               <Activity className="w-4 h-4 text-muted-foreground" />
             </div>

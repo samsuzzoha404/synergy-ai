@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient, type AuditLog, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
 import { leads as mockLeads, mockConflicts, type Lead } from '@/data/mockData';
 import { useAuth } from '@/context/AuthContext';
+import { toast } from '@/hooks/use-toast';
 
 // ---------------------------------------------------------------------------
 // Query Key Constants
@@ -219,13 +220,32 @@ export function useConflicts() {
 export function useUpdateLeadStage() {
   const queryClient = useQueryClient();
 
-  return useMutation<APILead, Error, { leadId: string; update: LeadUpdate }>({
+  return useMutation<APILead | null, Error, { leadId: string; update: LeadUpdate }>({
     mutationFn: async ({ leadId, update }) => {
+      // Mock leads (IDs starting with "L00") don't exist in Cosmos DB — skip the PATCH.
+      if (leadId.startsWith('L00')) return null;
       const response = await apiClient.patch<APILead>(`/api/leads/${leadId}`, update);
       return response.data;
     },
-    onSuccess: (_data, { leadId }) => {
-      // Invalidate the leads list so all views (workbench + dashboard) refresh.
+    onSuccess: (_data, { leadId, update }) => {
+      if (leadId.startsWith('L00')) {
+        // Update every cached 'leads' query variant in place so all views stay in sync.
+        queryClient.setQueriesData<Lead[]>(
+          { queryKey: QUERY_KEYS.leads },
+          (old) =>
+            old?.map((l) =>
+              l.id === leadId && update.stage
+                ? { ...l, stage: update.stage as Lead['stage'] }
+                : l,
+            ) ?? old,
+        );
+        toast({
+          title: 'Demo Mode',
+          description: 'Mock lead stage updated locally.',
+        });
+        return;
+      }
+      // Real lead — invalidate so all views (workbench + dashboard) refresh from the server.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
       // Invalidate this lead's audit log so the SmartDrawer history tab updates instantly.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.auditLogs(leadId) });
