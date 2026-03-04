@@ -114,7 +114,10 @@ export function useLeads() {
 
     refetchInterval: 60_000,
     staleTime: 30_000,
-    placeholderData: [...filteredMock],
+    // Bug #4 fix: use the function form so a new array reference is NOT created
+    // on every render. TanStack Query calls this only when placeholder data is
+    // actually needed, avoiding the structural-sharing overhead of an eager spread.
+    placeholderData: () => [...filteredMock],
   });
 }
 
@@ -230,6 +233,11 @@ export function useUpdateLeadStage() {
     onSuccess: (_data, { leadId, update }) => {
       if (leadId.startsWith('L00')) {
         // Update every cached 'leads' query variant in place so all views stay in sync.
+        // Bug #6 fix: QUERY_KEYS.leads is ['leads'], which TanStack Query v5
+        // matches as a prefix against the actual key ['leads', role, bu].
+        // This is intentional — all role/bu cache variants are updated at once.
+        // If exact matching is ever required, pass { exact: false } explicitly
+        // or enumerate every variant key here.
         queryClient.setQueriesData<Lead[]>(
           { queryKey: QUERY_KEYS.leads },
           (old) =>
@@ -249,6 +257,18 @@ export function useUpdateLeadStage() {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
       // Invalidate this lead's audit log so the SmartDrawer history tab updates instantly.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.auditLogs(leadId) });
+    },
+
+    // Bug #5 fix: roll back the optimistic UI on PATCH failure and notify the user.
+    // Invalidating forces useLeads() to re-fetch the authoritative server state,
+    // which overwrites any optimistic localLeads update already applied in the board.
+    onError: (_error, { leadId: _leadId }) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      toast({
+        title: 'Failed to update stage',
+        description: 'Could not move the lead. The board has been reverted to its last saved state.',
+        variant: 'destructive',
+      });
     },
   });
 }

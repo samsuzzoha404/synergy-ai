@@ -139,7 +139,15 @@ app = FastAPI(
 # Production example: ALLOWED_ORIGINS=https://synergy.chinhin.com.my
 # ---------------------------------------------------------------------------
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
-_allowed_origins: list = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+_allowed_origins: list = (
+    [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    or [
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8080",
+    ]
+)
 
 app.add_middleware(
     CORSMiddleware,

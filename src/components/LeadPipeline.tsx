@@ -12,7 +12,7 @@
  * Columns: Planning → Tender → Construction → Completed
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragEndEvent,
@@ -32,11 +32,10 @@ import {
   rectSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, DollarSign, Brain } from "lucide-react";
+import { GripVertical, DollarSign, Brain, ArrowUpRight, Inbox } from "lucide-react";
 import { Lead, LeadStage } from "@/data/mockData";
 import { useUpdateLeadStage } from "@/hooks/useLeads";
 import { cn } from "@/lib/utils";
-import { MatchScoreBadge } from "@/components/StatusBadge";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,6 +54,13 @@ function formatValue(value: number) {
   return `RM ${(value / 1_000).toFixed(0)}K`;
 }
 
+// Returns Tailwind classes for the AI match score badge based on score tier.
+function scoreClasses(score: number): string {
+  if (score >= 90) return "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+  if (score >= 75) return "bg-amber-500/10 text-amber-400 border border-amber-500/20";
+  return "bg-rose-500/10 text-rose-400 border border-rose-500/20";
+}
+
 // ---------------------------------------------------------------------------
 // Lead Card (sortable item)
 // ---------------------------------------------------------------------------
@@ -62,11 +68,9 @@ interface LeadCardProps {
   lead: Lead;
   onClick: (lead: Lead) => void;
   isDragging?: boolean;
-  /** When true the click handler is suppressed (drag just ended). */
-  suppressClick?: boolean;
 }
 
-function LeadCard({ lead, onClick, isDragging = false, suppressClick = false }: LeadCardProps) {
+function LeadCard({ lead, onClick, isDragging = false }: LeadCardProps) {
   const {
     attributes,
     listeners,
@@ -83,25 +87,40 @@ function LeadCard({ lead, onClick, isDragging = false, suppressClick = false }: 
 
   const topMatch = lead.matches[0];
 
+  // ── Visual state: floating overlay card (isDragging prop) vs. ghost placeholder
+  const isActivelyDragging = isDragging;           // DragOverlay copy — elevated
+  const isGhost            = sortableDragging;     // in-place ghost — faded
+
   return (
     <div
       ref={setNodeRef}
       style={style}
+      {...attributes}
+      {...listeners}
       className={cn(
-        "bg-card border border-border rounded-xl p-3.5 cursor-pointer select-none",
-        "hover:border-primary/30 hover:shadow-sm transition-all duration-150",
-        (sortableDragging || isDragging) && "opacity-40 shadow-xl ring-2 ring-primary/30",
+        // Base
+        "group relative bg-slate-800/80 border border-slate-700 rounded-xl p-3.5 select-none",
+        // Idle transitions
+        "transition-all duration-200 ease-out",
+        // Idle hover
+        !isGhost && !isActivelyDragging && [
+          "cursor-grab active:cursor-grabbing",
+          "hover:border-slate-600 hover:shadow-lg hover:shadow-black/40",
+          "shadow-md shadow-black/20",
+        ],
+        // In-place ghost (card slot while dragging)
+        isGhost && !isActivelyDragging && "opacity-30 cursor-grabbing",
+        // Floating overlay card (DragOverlay) — elevated, tilted
+        isActivelyDragging && [
+          "scale-105 rotate-2 opacity-90 cursor-grabbing",
+          "shadow-2xl shadow-indigo-500/20 border-indigo-500 z-50",
+        ],
       )}
-      onClick={() => { if (!suppressClick) onClick(lead); }}
+      onClick={() => onClick(lead)}
     >
-      {/* Drag handle — listeners bound here only, not on the whole card */}
+      {/* ── Top row: grip + title + hover-expand icon ── */}
       <div className="flex items-start gap-2">
-        <div
-          {...attributes}
-          {...listeners}
-          className="mt-0.5 cursor-grab active:cursor-grabbing text-muted-foreground/40 hover:text-muted-foreground flex-shrink-0"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="mt-0.5 text-muted-foreground/30 flex-shrink-0">
           <GripVertical className="w-4 h-4" />
         </div>
         <div className="flex-1 min-w-0">
@@ -110,24 +129,35 @@ function LeadCard({ lead, onClick, isDragging = false, suppressClick = false }: 
           </p>
           <p className="text-xs text-muted-foreground mt-0.5 truncate">{lead.location}</p>
         </div>
+        {/* Expand affordance — appears on hover */}
+        <div className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-150 text-slate-500 hover:text-slate-300">
+          <ArrowUpRight className="w-4 h-4" />
+        </div>
       </div>
 
-      {/* Value + AI score */}
+      {/* ── Value + AI score ── */}
       <div className="flex items-center justify-between mt-3">
-        <div className="flex items-center gap-1 text-xs font-bold text-success">
-          <DollarSign className="w-3 h-3" />
-          {formatValue(lead.value)}
+        {/* Prominent value */}
+        <div className="flex items-center gap-1">
+          <DollarSign className="w-3 h-3 text-emerald-400" />
+          <span className="text-xs font-bold tracking-tight text-emerald-400">
+            {formatValue(lead.value)}
+          </span>
         </div>
+        {/* Dynamic AI badge */}
         {topMatch && (
-          <div className="flex items-center gap-1">
-            <Brain className="w-3 h-3 text-muted-foreground" />
-            <MatchScoreBadge score={topMatch.score} bu={topMatch.bu} size="sm" />
+          <div className={cn(
+            "flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold",
+            scoreClasses(topMatch.score),
+          )}>
+            <Brain className="w-3 h-3" />
+            {topMatch.score}%
           </div>
         )}
       </div>
 
-      {/* Developer chip */}
-      <p className="mt-2 text-xs text-muted-foreground truncate border-t border-border pt-2">
+      {/* ── Developer chip ── */}
+      <p className="mt-2 text-xs text-muted-foreground truncate border-t border-slate-700/60 pt-2">
         {lead.developer}
       </p>
     </div>
@@ -141,10 +171,9 @@ interface ColumnProps {
   stage: LeadStage;
   leads: Lead[];
   onCardClick: (lead: Lead) => void;
-  suppressClick: boolean;
 }
 
-function KanbanColumn({ stage, leads, onCardClick, suppressClick }: ColumnProps) {
+function KanbanColumn({ stage, leads, onCardClick }: ColumnProps) {
   const meta = STAGE_META[stage];
   const totalValue = leads.reduce((s, l) => s + l.value, 0);
 
@@ -153,9 +182,11 @@ function KanbanColumn({ stage, leads, onCardClick, suppressClick }: ColumnProps)
   const { setNodeRef, isOver } = useDroppable({ id: stage });
 
   return (
-    <div className="flex flex-col min-w-[260px] max-w-[300px] flex-1">
-      {/* Column header */}
-      <div className={cn("rounded-xl px-3 py-2.5 mb-3 border border-border", meta.headerBg)}>
+    // Fixed height column — flex-col so the header stays sticky and the
+    // card area fills the remaining space and scrolls independently.
+    <div className="flex flex-col min-w-[260px] max-w-[300px] flex-shrink-0 h-[calc(100vh-250px)]">
+      {/* ── Sticky column header ── */}
+      <div className={cn("flex-shrink-0 rounded-xl px-3 py-2.5 mb-2 border border-border", meta.headerBg)}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className={cn("w-2 h-2 rounded-full flex-shrink-0", meta.dot)} />
@@ -172,14 +203,18 @@ function KanbanColumn({ stage, leads, onCardClick, suppressClick }: ColumnProps)
         )}
       </div>
 
-      {/* Droppable + sortable cards area.
-          setNodeRef makes this div the drop target for the stage column.
-          rectSortingStrategy handles 2-D / multi-container positioning correctly. */}
+      {/* ── Scrollable card area ──
+          SortableContext wraps the scrollable div so @dnd-kit can locate items
+          within their scroll container. setNodeRef is on the inner div so
+          droppable collision detection maps to the scrollable region. */}
       <SortableContext items={leads.map((l) => l.id)} strategy={rectSortingStrategy}>
         <div
           ref={setNodeRef}
           className={cn(
-            "flex flex-col gap-2.5 flex-1 min-h-[120px] rounded-xl p-1 transition-colors duration-150",
+            "flex-1 overflow-y-auto overflow-x-hidden",
+            "flex flex-col gap-2.5 min-h-[80px] rounded-xl p-2 transition-colors duration-150",
+            // Custom slim scrollbar
+            "scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent hover:scrollbar-thumb-slate-600",
             isOver && "bg-primary/5 ring-1 ring-primary/20",
           )}
         >
@@ -188,12 +223,14 @@ function KanbanColumn({ stage, leads, onCardClick, suppressClick }: ColumnProps)
               key={lead.id}
               lead={lead}
               onClick={onCardClick}
-              suppressClick={suppressClick}
             />
           ))}
           {leads.length === 0 && (
-            <div className="flex items-center justify-center h-20 rounded-xl border-2 border-dashed border-border text-xs text-muted-foreground/60">
-              Drop here
+            <div className="flex flex-col items-center justify-center gap-3 p-6 mt-1 rounded-xl border-2 border-dashed border-slate-700/50 text-slate-500">
+              <Inbox className="w-7 h-7 opacity-40" />
+              <p className="text-xs text-center leading-relaxed opacity-70">
+                No leads yet.<br />Drag a card here.
+              </p>
             </div>
           )}
         </div>
@@ -219,11 +256,6 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
   // ID of the card currently being dragged (null when idle).
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // wasDragging: set to true the moment a drag completes, cleared on the next
-  // event loop tick. The LeadCard onClick guard reads this to prevent the
-  // pointerup→click sequence from opening the SmartDrawer after a drag.
-  const wasDragging = useRef(false);
-
   // Sync localLeads from the server-truth `leads` prop ONLY while not dragging.
   // Doing this during an active drag would overwrite our optimistic stage moves.
   // We skip the sync while activeId is set (drag in progress) so the board
@@ -232,11 +264,19 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
   // the next sync lands cleanly on the correct final state.
   const leadsRef = useRef(leads);
   leadsRef.current = leads;
-  if (activeId === null && localLeads !== leads) {
-    // Synchronous state update during render — safe in React 18 when the
-    // condition is referentially stable (leads identity changes only on fetch).
-    setLocalLeads(leads);
-  }
+
+  // Bug #1 fix: replace the render-phase sync with a useEffect so it only
+  // fires when `leads` (server data) actually changes — NOT when activeId
+  // transitions to null on drag-end. By omitting activeId from the dep array,
+  // the optimistic stage update applied in handleDragOver is preserved until
+  // the mutation's setQueriesData / invalidateQueries delivers the confirmed
+  // server state, at which point `leads` changes and this effect runs cleanly.
+  useEffect(() => {
+    if (activeId === null) {
+      setLocalLeads(leads);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads]);
 
   const activeLead = useMemo(
     () => localLeads.find((l) => l.id === activeId) ?? null,
@@ -264,7 +304,6 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
 
   function handleDragStart({ active }: DragStartEvent) {
     setActiveId(String(active.id));
-    wasDragging.current = false;
   }
 
   function handleDragOver({ active, over }: DragOverEvent) {
@@ -296,10 +335,6 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
     const leadId = String(active.id);
     setActiveId(null);
 
-    // Mark that a drag just happened so the card's onClick is suppressed.
-    wasDragging.current = true;
-    setTimeout(() => { wasDragging.current = false; }, 0);
-
     if (!over) {
       // Dropped outside any droppable — revert to server truth.
       setLocalLeads(leadsRef.current);
@@ -330,18 +365,18 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
     <DndContext
       sensors={sensors}
       collisionDetection={closestCorners}
+      autoScroll
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex gap-4 overflow-x-auto pb-4 min-h-[400px]">
+      <div className="flex gap-4 overflow-x-auto pb-4">
         {STAGES.map((stage) => (
           <KanbanColumn
             key={stage}
             stage={stage}
             leads={byStage[stage]}
             onCardClick={onLeadClick}
-            suppressClick={wasDragging.current}
           />
         ))}
       </div>
@@ -349,7 +384,7 @@ export function LeadPipeline({ leads, onLeadClick }: LeadPipelineProps) {
       {/* Drag overlay — floating card while dragging */}
       <DragOverlay>
         {activeLead ? (
-          <LeadCard lead={activeLead} onClick={() => {}} isDragging suppressClick />
+          <LeadCard lead={activeLead} onClick={() => {}} isDragging />
         ) : null}
       </DragOverlay>
     </DndContext>
