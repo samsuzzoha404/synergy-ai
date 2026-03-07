@@ -16,19 +16,29 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiClient, type AuditLog, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
+import { apiClient, type AuditLog, type BUContact, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate, type UserCreate, type UserProfile, type UserUpdate } from '@/lib/api';
 import { type Lead } from '@/data/mockData';
 import { toast } from '@/hooks/use-toast';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Number of leads fetched per page. Matches the backend default limit. */
+export const PAGE_SIZE = 100;
 
 // ---------------------------------------------------------------------------
 // Query Key Constants
 // Centralised so invalidation and cache lookups are always consistent.
 // ---------------------------------------------------------------------------
 export const QUERY_KEYS = {
-  leads: ['leads'] as const,
+  leads: (page: number) => ['leads', page] as const,
+  allLeads: ['leads'] as const,       // for invalidation (prefix match)
   conflicts: ['conflicts'] as const,
   activities: (leadId: string) => ['activities', leadId] as const,
   auditLogs: (leadId: string) => ['auditLogs', leadId] as const,
+  buContacts: ['buContacts'] as const,
+  adminUsers: ['adminUsers'] as const,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -95,23 +105,48 @@ function adaptAPILead(apiLead: APILead): Lead {
 // ===========================================================================
 
 /**
- * Returns all leads from the backend (GET /api/leads).
+ * Returns a page of leads from the backend (GET /api/leads?skip=N&limit=100).
  * RBAC filtering (Admin vs Sales_Rep BU) is applied server-side via the JWT.
  *
+ * @param page  0-based page number (default 0)
+ *
  * @example
- *   const { data: leads = [], isLoading } = useLeads();
+ *   const { data: leads = [], isLoading, total } = useLeads();
+ *   const { data: leads } = useLeads(2); // page 3
  */
-export function useLeads() {
-  return useQuery<Lead[], Error>({
-    queryKey: QUERY_KEYS.leads,
+export function useLeads(page = 0) {
+  return useQuery({
+    queryKey: QUERY_KEYS.leads(page),
 
-    queryFn: async (): Promise<Lead[]> => {
-      const response = await apiClient.get<APILead[]>('/api/leads');
-      return response.data.map(adaptAPILead);
+    queryFn: async (): Promise<{ leads: Lead[]; total: number }> => {
+      const skip = page * PAGE_SIZE;
+      const response = await apiClient.get<APILead[]>('/api/leads', {
+        params: { skip, limit: PAGE_SIZE },
+      });
+      const total = parseInt(response.headers['x-total-count'] ?? '0', 10);
+      return { leads: response.data.map(adaptAPILead), total };
     },
 
     refetchInterval: 60_000,
     staleTime: 30_000,
+    select: (data) => data,   // keep full object so callers access .leads and .total
+  });
+}
+
+/**
+ * Fetches ALL leads in a single request (limit=1000) for reporting purposes.
+ * Not paginated — returns a flat array.
+ */
+export function useAllLeads() {
+  return useQuery<Lead[]>({
+    queryKey: ['allLeadsFlat'],
+    queryFn: async () => {
+      const response = await apiClient.get<APILead[]>('/api/leads', {
+        params: { skip: 0, limit: 1000 },
+      });
+      return response.data.map(adaptAPILead);
+    },
+    staleTime: 60_000,
   });
 }
 
@@ -148,7 +183,7 @@ export function useCreateLead(options?: {
 
     onSuccess: (data: APILead) => {
       // Bust the leads cache so the new lead appears in the workbench instantly.
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.allLeads });
       options?.onSuccess?.(data);
     },
 
@@ -204,16 +239,14 @@ export function useUpdateLeadStage() {
     },
     onSuccess: (_data, { leadId }) => {
       // Invalidate so all views (workbench + dashboard) refresh from the server.
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.allLeads });
       // Invalidate this lead's audit log so the SmartDrawer history tab updates instantly.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.auditLogs(leadId) });
     },
 
     // Bug #5 fix: roll back the optimistic UI on PATCH failure and notify the user.
-    // Invalidating forces useLeads() to re-fetch the authoritative server state,
-    // which overwrites any optimistic localLeads update already applied in the board.
     onError: (_error, { leadId: _leadId }) => {
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.allLeads });
       toast({
         title: 'Failed to update stage',
         description: 'Could not move the lead. The board has been reverted to its last saved state.',
@@ -364,8 +397,84 @@ export function useBulkUpload() {
     },
     onSuccess: () => {
       // Bust the leads cache so the workbench shows the newly imported leads
-      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.allLeads });
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.conflicts });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// useBUContacts — GET /api/bu-contacts
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the BU sales manager directory fetched from the backend config file.
+ * Cached for 10 minutes — contacts rarely change.
+ */
+export function useBUContacts() {
+  return useQuery<BUContact[]>({
+    queryKey: QUERY_KEYS.buContacts,
+    queryFn: async () => {
+      const res = await apiClient.get<BUContact[]>('/api/bu-contacts');
+      return res.data;
+    },
+    staleTime: 10 * 60 * 1000,   // 10 minutes
+    retry: 1,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Admin User Management Hooks — GET/POST/PATCH/DELETE /api/admin/users
+// ---------------------------------------------------------------------------
+
+/** Fetch all user accounts. Only succeeds for Admin-role tokens. */
+export function useAdminUsers() {
+  return useQuery<UserProfile[]>({
+    queryKey: QUERY_KEYS.adminUsers,
+    queryFn: async () => {
+      const res = await apiClient.get<UserProfile[]>('/api/admin/users');
+      return res.data;
+    },
+  });
+}
+
+/** Create a new user account. */
+export function useAdminCreateUser() {
+  const queryClient = useQueryClient();
+  return useMutation<UserProfile, Error, UserCreate>({
+    mutationFn: async (payload) => {
+      const res = await apiClient.post<UserProfile>('/api/admin/users', payload);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers });
+    },
+  });
+}
+
+/** Update an existing user (partial). */
+export function useAdminUpdateUser(userId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<UserProfile, Error, UserUpdate>({
+    mutationFn: async (payload) => {
+      const res = await apiClient.patch<UserProfile>(`/api/admin/users/${userId}`, payload);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers });
+    },
+  });
+}
+
+/** Hard-delete a user account. */
+export function useAdminDeleteUser() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, string>({
+    mutationFn: async (userId) => {
+      await apiClient.delete(`/api/admin/users/${userId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.adminUsers });
     },
   });
 }

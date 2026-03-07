@@ -54,6 +54,7 @@ interface LoginPayload {
 
 interface LoginResponse {
   access_token: string;
+  refresh_token: string;
   token_type: string;
   user: AuthUser;
 }
@@ -79,8 +80,9 @@ interface AuthContextValue {
 // Storage Keys
 // ---------------------------------------------------------------------------
 
-const STORAGE_TOKEN_KEY = 'synergy_token';
-const STORAGE_USER_KEY = 'synergy_user';
+const STORAGE_TOKEN_KEY   = 'synergy_token';
+const STORAGE_REFRESH_KEY = 'synergy_refresh_token';
+const STORAGE_USER_KEY    = 'synergy_user';
 
 // ---------------------------------------------------------------------------
 // Context
@@ -136,10 +138,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       '/api/auth/login',
       payload,
     );
-    const { access_token, user: userProfile } = response.data;
+    const { access_token, refresh_token, user: userProfile } = response.data;
     setToken(access_token);
     setUser(userProfile);
     localStorage.setItem(STORAGE_TOKEN_KEY, access_token);
+    localStorage.setItem(STORAGE_REFRESH_KEY, refresh_token);
     localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(userProfile));
   }, [queryClient]);
 
@@ -147,6 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
     localStorage.removeItem(STORAGE_TOKEN_KEY);
+    localStorage.removeItem(STORAGE_REFRESH_KEY);
     localStorage.removeItem(STORAGE_USER_KEY);
     // Wipe the entire React Query cache so no previous user's data
     // (leads, conflicts, audit logs) leaks into the next login session.

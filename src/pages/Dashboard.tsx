@@ -61,16 +61,16 @@ const CustomBarTooltip = ({ active, payload, label }: CustomBarTooltipProps) => 
   return null;
 };
 
-// ── Static sample data ─────────────────────────────────────────────────────
-// recentActivity is a static sample feed (no real-time activity endpoint yet).
-// Labelled clearly in the UI so reviewers know it is not live data.
-const recentActivity = [
-  { id: 1, action: "Lead assigned", detail: "Avantro Residences → Stucken", time: "2 mins ago", type: "assign" },
-  { id: 2, action: "Duplicate detected", detail: "Twin Towers Reno flagged", time: "18 mins ago", type: "alert" },
-  { id: 3, action: "New lead ingested", detail: "Putrajaya Federal Complex", time: "1 hr ago", type: "new" },
-  { id: 4, action: "Lead won", detail: "KL Eco City Tower C — RM 175M", time: "3 hrs ago", type: "win" },
-  { id: 5, action: "CSV uploaded", detail: "BCI_June2025_export.csv — 127 leads", time: "5 hrs ago", type: "upload" },
-];
+// Converts a "YYYY-MM-DD" date string to a human-readable relative time.
+function relativeTime(dateStr: string | undefined): string {
+  if (!dateStr) return "—";
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 const STAGE_COLORS: Record<string, string> = {
   Planning:     "hsl(217, 91%, 50%)",
@@ -78,15 +78,6 @@ const STAGE_COLORS: Record<string, string> = {
   Construction: "hsl(262, 80%, 56%)",
   Completed:    "hsl(142, 76%, 36%)",
 };
-
-const trendData = [
-  { month: "Jan", leads: 58, value: 24 },
-  { month: "Feb", leads: 72, value: 31 },
-  { month: "Mar", leads: 65, value: 28 },
-  { month: "Apr", leads: 91, value: 45 },
-  { month: "May", leads: 84, value: 39 },
-  { month: "Jun", leads: 127, value: 62 },
-];
 
 const activityIcons: Record<string, { icon: LucideIcon; color: string }> = {
   assign: { icon: CheckCircle2, color: "text-success" },
@@ -101,7 +92,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
   // All KPI data flows from the hook — RBAC filtering happens inside useLeads().
-  const { data: leads = [] } = useLeads();
+  const { data } = useLeads();
+  const leads = data?.leads ?? [];
 
   // ── Dynamic KPI Computation ─────────────────────────────────────────────
   // 1. Total Leads: live count from merged mock + API leads
@@ -183,6 +175,57 @@ export default function Dashboard() {
 
   const recentLeads = leads.slice(0, 5);
 
+  // ── Trend chart — real lead counts grouped by month (last 6 months) ─────
+  const computedTrendData = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+      const yr = d.getFullYear();
+      const mo = d.getMonth();
+      const monthLeads = leads.filter((l) => {
+        if (!l.createdDate) return false;
+        const ld = new Date(l.createdDate);
+        return ld.getFullYear() === yr && ld.getMonth() === mo;
+      });
+      return {
+        month: d.toLocaleString("default", { month: "short" }),
+        leads: monthLeads.length,
+        value: Math.round(monthLeads.reduce((s, l) => s + l.value, 0) / 1_000_000),
+      };
+    });
+  }, [leads]);
+
+  // ── Quarter-over-quarter lead count change ───────────────────────────────
+  const qoqChange = useMemo(() => {
+    const now = new Date();
+    const qStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+    const prevQStart = new Date(qStart.getFullYear(), qStart.getMonth() - 3, 1);
+    const cur = leads.filter((l) => l.createdDate && new Date(l.createdDate) >= qStart).length;
+    const prev = leads.filter((l) => {
+      if (!l.createdDate) return false;
+      const d = new Date(l.createdDate);
+      return d >= prevQStart && d < qStart;
+    }).length;
+    if (prev === 0) return null;
+    return Math.round(((cur - prev) / prev) * 100);
+  }, [leads]);
+
+  // ── Activity feed derived from real leads (newest first) ────────────────
+  const derivedActivity = useMemo(() => {
+    const sorted = [...leads].sort(
+      (a, b) => new Date(b.createdDate).getTime() - new Date(a.createdDate).getTime()
+    );
+    return sorted.slice(0, 5).map((l) => {
+      if (l.isDuplicate)
+        return { id: l.id, action: "Duplicate detected", detail: `${l.projectName} flagged`, time: l.createdDate, type: "alert" };
+      if (l.status === "Won")
+        return { id: l.id, action: "Lead won", detail: `${l.projectName} — ${formatCurrency(l.value)}`, time: l.createdDate, type: "win" };
+      if (l.status === "Assigned")
+        return { id: l.id, action: "Lead assigned", detail: `${l.projectName} → ${l.matches[0]?.bu ?? ""}`, time: l.createdDate, type: "assign" };
+      return { id: l.id, action: "New lead ingested", detail: l.projectName, time: l.createdDate, type: "new" };
+    });
+  }, [leads]);
+
   return (
     <>
       <div className="p-4 md:p-6 space-y-5 animate-fade-in">
@@ -191,7 +234,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl md:text-2xl font-bold text-foreground">Executive Dashboard</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {getGreeting()}, {user?.name ?? 'there'} — Q2 2025 Synergy overview
+              {getGreeting()}, {user?.name ?? 'there'} — {new Date().toLocaleString("default", { month: "long", year: "numeric" })} Synergy overview
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -216,15 +259,17 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="text-sm font-semibold text-foreground">Lead Volume Trend</h2>
-                <p className="text-xs text-muted-foreground">Monthly lead ingestion — Jan to Jun 2025</p>
+                <p className="text-xs text-muted-foreground">Monthly lead ingestion — last 6 months</p>
               </div>
-              <div className="flex items-center gap-1.5 text-xs text-success font-medium bg-success-light border border-success/20 rounded-lg px-2.5 py-1">
-                <TrendingUp className="w-3 h-3" />
-                +15% QoQ
-              </div>
+              {qoqChange !== null && (
+                <div className={cn("flex items-center gap-1.5 text-xs font-medium rounded-lg px-2.5 py-1", qoqChange >= 0 ? "text-success bg-success-light border border-success/20" : "text-destructive bg-destructive/10 border border-destructive/20")}>
+                  {qoqChange >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                  {qoqChange >= 0 ? "+" : ""}{qoqChange}% QoQ
+                </div>
+              )}
             </div>
             <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={trendData}>
+              <AreaChart data={computedTrendData}>
                 <defs>
                   <linearGradient id="colorLeads" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="hsl(217, 91%, 50%)" stopOpacity={0.2} />
@@ -333,12 +378,12 @@ export default function Dashboard() {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-sm font-semibold text-foreground">Recent Activity</h2>
-                <p className="text-xs text-muted-foreground">Sample Feed · not live data</p>
+                <p className="text-xs text-muted-foreground">Derived from live lead data</p>
               </div>
               <Activity className="w-4 h-4 text-muted-foreground" />
             </div>
             <div className="space-y-3">
-              {recentActivity.map((item, i) => {
+              {derivedActivity.map((item) => {
                 const config = activityIcons[item.type] || activityIcons.new;
                 const Icon = config.icon;
                 return (
@@ -350,7 +395,7 @@ export default function Dashboard() {
                       <p className="text-xs font-semibold text-foreground leading-tight">{item.action}</p>
                       <p className="text-xs text-muted-foreground mt-0.5 truncate">{item.detail}</p>
                     </div>
-                    <span className="text-xs text-muted-foreground/70 flex-shrink-0 whitespace-nowrap">{item.time}</span>
+                    <span className="text-xs text-muted-foreground/70 flex-shrink-0 whitespace-nowrap">{relativeTime(item.time)}</span>
                   </div>
                 );
               })}

@@ -110,6 +110,9 @@ export default function DataIngestion() {
         value_rm: Number(data.value),
         project_type: data.type || "Commercial",
         stage: data.stage || "Planning",
+        developer: data.developer || null,
+        floors: data.floors ? Number(data.floors) : null,
+        gfa: data.gfa ? Number(data.gfa) : null,
       });
       toast({
         title: "✅ Lead Created & AI-Scored",
@@ -373,6 +376,16 @@ export default function DataIngestion() {
                   placeholder="e.g. 42"
                   className="h-9 text-sm"
                   {...register("floors")}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-muted-foreground">GFA (sq ft)</Label>
+                <Input
+                  type="number"
+                  placeholder="e.g. 850000"
+                  className="h-9 text-sm"
+                  {...register("gfa")}
                 />
               </div>
 

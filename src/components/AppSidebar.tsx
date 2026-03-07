@@ -14,16 +14,24 @@ import {
   Settings,
   HelpCircle,
   Bell,
+  Users,
+  BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { useConflicts } from "@/hooks/useLeads";
+import { useAuth } from "@/context/AuthContext";
 
-const navItems = [
+const NAV_ITEMS = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Executive Dashboard" },
   { to: "/leads", icon: TableProperties, label: "Lead Workbench" },
   { to: "/conflicts", icon: AlertTriangle, label: "Conflict Resolution", dynamicBadge: true },
   { to: "/ingest", icon: Upload, label: "Data Ingestion" },
+  { to: "/reports", icon: BarChart3, label: "Reports & Export" },
+];
+
+const ADMIN_NAV_ITEMS = [
+  { to: "/admin/users", icon: Users, label: "User Management" },
 ];
 
 interface SidebarProps {
@@ -33,10 +41,10 @@ interface SidebarProps {
 
 export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
-  // Fetch live conflict count for the sidebar badge (BUG-M4 fix)
   const { data: conflicts = [] } = useConflicts();
-  // Show the real count. If 0, badge is hidden — no artificial fallback to 1.
+  const { user } = useAuth();
   const conflictCount = conflicts.length;
+  const isAdmin = user?.role === "Admin";
 
   const SidebarContent = ({ isMobile = false }: { isMobile?: boolean }) => (
     <div
@@ -65,7 +73,7 @@ export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
       {/* Nav */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto scrollbar-thin">
-        {navItems.map(({ to, icon: Icon, label, dynamicBadge }) => {
+        {NAV_ITEMS.map(({ to, icon: Icon, label, dynamicBadge }) => {
           const badge = dynamicBadge ? (conflictCount > 0 ? String(conflictCount) : undefined) : undefined;
           return (
           <NavLink
@@ -101,6 +109,40 @@ export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           </NavLink>
           );
         })}
+
+        {/* Admin-only section */}
+        {isAdmin && (
+          <>
+            {(!collapsed || isMobile) && (
+              <p className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">
+                Admin
+              </p>
+            )}
+            {collapsed && !isMobile && <div className="mt-3 border-t border-sidebar-border" />}
+            {ADMIN_NAV_ITEMS.map(({ to, icon: Icon, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                onClick={isMobile ? onMobileClose : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sidebar-foreground transition-all duration-150 text-sm font-medium",
+                    isActive
+                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                      : "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon className={cn("w-4 h-4 flex-shrink-0", isActive ? "text-sidebar-primary-foreground" : "text-sidebar-foreground")} />
+                    {(!collapsed || isMobile) && <span className="flex-1 truncate">{label}</span>}
+                  </>
+                )}
+              </NavLink>
+            ))}
+          </>
+        )}
       </nav>
 
       {/* Footer */}

@@ -18,7 +18,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from azure.cosmos import CosmosClient, PartitionKey, exceptions
+from azure.cosmos import CosmosClient, PartitionKey, ThroughputProperties, exceptions
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
@@ -41,6 +41,22 @@ CONTAINER_ACTIVITIES: str = os.environ.get("COSMOS_CONTAINER_ACTIVITIES", "Activ
 CONTAINER_AUDIT: str = os.environ.get("COSMOS_CONTAINER_AUDIT", "AuditLogs")
 
 # ---------------------------------------------------------------------------
+# Throughput configuration — read from env vars so you can tune without redeploy.
+#
+# COSMOS_THROUGHPUT_MODE   : "autoscale" (default) | "manual"
+# COSMOS_AUTOSCALE_MAX_RU  : max RU/s for autoscale mode   (default 4000)
+#   → Cosmos DB automatically scales between 10% of max and max.
+#   → You are billed for the peak used per hour, not the max.
+#   → 4000 RU/s max = scales between 400 and 4000; covers ~50 concurrent users.
+# COSMOS_MANUAL_RU         : fixed RU/s for manual mode     (default 1000)
+# COSMOS_CONFIGURE_THROUGHPUT: set to "false" to skip throughput updates (CI/read-only accounts)
+# ---------------------------------------------------------------------------
+_THROUGHPUT_MODE         = os.environ.get("COSMOS_THROUGHPUT_MODE",          "autoscale")
+_AUTOSCALE_MAX_RU        = int(os.environ.get("COSMOS_AUTOSCALE_MAX_RU",     "4000"))
+_MANUAL_RU               = int(os.environ.get("COSMOS_MANUAL_RU",            "1000"))
+_CONFIGURE_THROUGHPUT    = os.environ.get("COSMOS_CONFIGURE_THROUGHPUT",     "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
 # Singleton Cosmos client — created once, reused across all requests.
 # This avoids the cost of TCP connection setup on every API call.
 # ---------------------------------------------------------------------------
@@ -53,17 +69,63 @@ _cosmos_client: CosmosClient = CosmosClient(
 # create_if_not_exists ensures the app bootstraps cleanly in a fresh environment.
 _database = _cosmos_client.create_database_if_not_exists(id=DATABASE_NAME)
 
+
+# ---------------------------------------------------------------------------
+# Throughput helper — upgrades a container from the creation default (400 RU/s)
+# to the configured production setting (autoscale or higher manual).
+#
+# Called immediately after create_container_if_not_exists() for every container.
+# Idempotent: safe to call on every startup; Cosmos DB ignores no-op updates.
+# Set COSMOS_CONFIGURE_THROUGHPUT=false for read-only RBAC accounts or CI.
+# ---------------------------------------------------------------------------
+def _configure_throughput(container, container_name: str) -> None:
+    """Apply the project's throughput policy to a Cosmos DB container.
+
+    Args:
+        container:      A ContainerProxy returned by create_container_if_not_exists.
+        container_name: Human-readable name used in log messages.
+    """
+    if not _CONFIGURE_THROUGHPUT:
+        return
+    try:
+        if _THROUGHPUT_MODE == "autoscale":
+            props = ThroughputProperties(
+                auto_scale_max_throughput=_AUTOSCALE_MAX_RU,
+                auto_scale_increment_percent=0,
+            )
+            logger.info(
+                "Throughput → autoscale max=%d RU/s on container='%s'",
+                _AUTOSCALE_MAX_RU, container_name,
+            )
+        else:
+            props = ThroughputProperties(offer_throughput=_MANUAL_RU)
+            logger.info(
+                "Throughput → manual %d RU/s on container='%s'",
+                _MANUAL_RU, container_name,
+            )
+        container.replace_throughput(props)
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal: log and continue. Common causes:
+        #   • the account principal lacks RBAC "Cosmos DB Operator" write role
+        #   • the container uses shared database-level throughput (replace not needed)
+        logger.warning(
+            "Could not set throughput on container='%s' (non-fatal): %s",
+            container_name, exc,
+        )
+
 _leads_container = _database.create_container_if_not_exists(
     id=CONTAINER_LEADS,
     partition_key=PartitionKey(path="/id"),
-    offer_throughput=400,  # Minimum RU/s — scale up for production load
+    offer_throughput=400,  # Initial creation default; _configure_throughput() upgrades this immediately.
 )
+_configure_throughput(_leads_container, CONTAINER_LEADS)
 
 _conflicts_container = _database.create_container_if_not_exists(
     id=CONTAINER_CONFLICTS,
     partition_key=PartitionKey(path="/id"),
     offer_throughput=400,
 )
+_configure_throughput(_conflicts_container, CONTAINER_CONFLICTS)
 
 # New containers — Users (partitioned by /email), Activities & AuditLogs (partitioned by /lead_id)
 users_container = _database.create_container_if_not_exists(
@@ -71,18 +133,21 @@ users_container = _database.create_container_if_not_exists(
     partition_key=PartitionKey(path="/email"),
     offer_throughput=400,
 )
+_configure_throughput(users_container, CONTAINER_USERS)
 
 activities_container = _database.create_container_if_not_exists(
     id=CONTAINER_ACTIVITIES,
     partition_key=PartitionKey(path="/lead_id"),
     offer_throughput=400,
 )
+_configure_throughput(activities_container, CONTAINER_ACTIVITIES)
 
 audit_container = _database.create_container_if_not_exists(
     id=CONTAINER_AUDIT,
     partition_key=PartitionKey(path="/lead_id"),
     offer_throughput=400,
 )
+_configure_throughput(audit_container, CONTAINER_AUDIT)
 
 logger.info(
     "CosmosDB connected — database='%s', leads='%s', conflicts='%s', users='%s', activities='%s', audit='%s'",
@@ -152,14 +217,8 @@ def read_lead(lead_id: str) -> Dict[str, Any]:
 
 def get_all_leads() -> List[Dict[str, Any]]:
     """
-    Retrieve all lead documents from the Leads container.
-
-    Returns:
-        A list of raw Cosmos DB item dicts. Cosmos metadata fields
-        (e.g., _rid, _ts) are present but stripped before API responses.
-
-    NOTE: For large datasets (>1000 leads), add pagination using
-          max_item_count and continuation tokens.
+    Retrieve ALL lead documents.
+    Use get_leads_page() for API responses to avoid timeout on large datasets.
     """
     try:
         items = list(
@@ -172,6 +231,84 @@ def get_all_leads() -> List[Dict[str, Any]]:
         return items
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch leads: %s", exc)
+        raise
+
+
+def get_all_lead_vectors() -> List[Dict[str, Any]]:
+    """
+    Fetch ONLY the ``id`` and ``vector`` fields from every lead document.
+
+    This is the authoritative, DB-backed source used for duplicate detection.
+    Because it is sourced from Cosmos DB rather than an in-memory cache, it is:
+
+    • Consistent across all server instances (multi-instance safe).
+    • Persistent across server restarts.
+    • Lightweight — the projection query transfers only ~6 KB per lead
+      (1 536-dim float32 vector ≈ 6 KB), vs. the full document (~1–2 KB extra).
+
+    Returns:
+        List of dicts: [{"id": str, "vector": List[float]}, ...]
+        Documents without a vector field are silently skipped.
+    """
+    try:
+        items = list(
+            _leads_container.query_items(
+                query="SELECT c.id, c.vector FROM c WHERE IS_DEFINED(c.vector)",
+                enable_cross_partition_query=True,
+            )
+        )
+        vectors = [{"id": doc["id"], "vector": doc["vector"]} for doc in items if doc.get("vector")]
+        logger.debug("Vector projection fetched — %d leads with embeddings", len(vectors))
+        return vectors
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to fetch lead vectors: %s", exc)
+        raise
+
+
+def get_leads_page(skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+    """
+    Fetch a paginated page of leads using Cosmos DB OFFSET LIMIT syntax.
+
+    Args:
+        skip:  Number of records to skip (0-based offset).
+        limit: Maximum number of records to return (capped at 500 by the API layer).
+
+    Returns:
+        A list of raw Cosmos DB item dicts sorted newest-first.
+    """
+    try:
+        items = list(
+            _leads_container.query_items(
+                query=(
+                    "SELECT * FROM c "
+                    "ORDER BY c._ts DESC "
+                    f"OFFSET {int(skip)} LIMIT {int(limit)}"
+                ),
+                enable_cross_partition_query=True,
+            )
+        )
+        logger.info("Paged leads fetch — skip=%d limit=%d returned=%d", skip, limit, len(items))
+        return items
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to fetch paged leads (skip=%d, limit=%d): %s", skip, limit, exc)
+        raise
+
+
+def count_leads() -> int:
+    """
+    Return the total number of lead documents in the Leads container.
+    Used to populate the X-Total-Count response header for pagination.
+    """
+    try:
+        results = list(
+            _leads_container.query_items(
+                query="SELECT VALUE COUNT(1) FROM c",
+                enable_cross_partition_query=True,
+            )
+        )
+        return int(results[0]) if results else 0
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to count leads: %s", exc)
         raise
 
 
@@ -251,19 +388,135 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
 
 def count_users() -> int:
     """
-    Return the total number of documents in the Users container.
-    Used at startup to determine whether demo users need bootstrapping.
+    Return the number of DISTINCT email addresses in the Users container.
+    Using distinct emails prevents a re-bootstrap when duplicate documents exist.
+    """
+    try:
+        # Cosmos DB NoSQL does not support SELECT COUNT(DISTINCT ...) directly,
+        # so we fetch all emails and count unique values in Python.
+        results = list(
+            users_container.query_items(
+                query="SELECT VALUE c.email FROM c",
+                enable_cross_partition_query=True,
+            )
+        )
+        return len(set(results))
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to count users: %s", exc)
+        raise
+
+
+def list_users() -> List[Dict[str, Any]]:
+    """
+    Return unique user documents (excluding hashed_password) for the admin panel.
+    Deduplicates by email — keeps the document with the lexicographically smallest id
+    so the result is stable across calls.
+    Cross-partition query — acceptable for the small Users container.
     """
     try:
         results = list(
             users_container.query_items(
-                query="SELECT VALUE COUNT(1) FROM c",
+                query="SELECT c.id, c.email, c.name, c.role, c.bu FROM c",
                 enable_cross_partition_query=True,
             )
         )
-        return int(results[0]) if results else 0
+        # Deduplicate by email — keep the entry with the smallest id (stable sort).
+        # This guards against accidental bootstrap re-runs that left duplicate docs.
+        seen: Dict[str, Any] = {}
+        for doc in results:
+            email = doc.get("email", "")
+            if email not in seen or doc.get("id", "") < seen[email].get("id", ""):
+                seen[email] = doc
+        return list(seen.values())
     except exceptions.CosmosHttpResponseError as exc:
-        logger.error("Failed to count users: %s", exc)
+        logger.error("Failed to list users: %s", exc)
+        raise
+
+
+def cleanup_duplicate_users() -> int:
+    """
+    Hard-delete duplicate user documents from Cosmos DB, keeping exactly one
+    document per email address (the one with the lexicographically smallest id).
+
+    Returns the number of duplicate documents deleted.
+    Called once via GET /api/admin/users/cleanup (admin-only endpoint).
+    """
+    try:
+        all_docs = list(
+            users_container.query_items(
+                query="SELECT c.id, c.email FROM c",
+                enable_cross_partition_query=True,
+            )
+        )
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("cleanup_duplicate_users: query failed: %s", exc)
+        raise
+
+    # Group all document ids by email
+    from collections import defaultdict
+    grouped: Dict[str, list] = defaultdict(list)
+    for doc in all_docs:
+        grouped[doc["email"]].append(doc["id"])
+
+    deleted = 0
+    for email, ids in grouped.items():
+        if len(ids) <= 1:
+            continue
+        # Keep the smallest id, delete the rest
+        ids.sort()
+        for dup_id in ids[1:]:
+            try:
+                users_container.delete_item(item=dup_id, partition_key=email)
+                logger.info("Deleted duplicate user doc id='%s' email='%s'", dup_id, email)
+                deleted += 1
+            except exceptions.CosmosHttpResponseError as exc:
+                logger.error("Failed to delete dup id='%s': %s", dup_id, exc)
+    return deleted
+
+
+def update_user(user_id: str, email: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Partial-update a user document by reading the current state then upserting
+    the merged result.  hashed_password is never overwritten unless explicitly
+    included in ``fields``.
+
+    Args:
+        user_id:  Cosmos document ``id`` (for logging only — uniqueness by email).
+        email:    Partition key used to retrieve the existing document.
+        fields:   Dict of fields to update (name, role, bu, hashed_password, …).
+
+    Returns the updated document (without hashed_password).
+    """
+    existing = get_user_by_email(email)
+    if existing is None:
+        raise KeyError(f"User not found: {email}")
+    existing.update(fields)
+    try:
+        users_container.upsert_item(body=existing)
+        logger.info("User updated — email='%s' fields=%s", email, list(fields.keys()))
+        existing.pop("hashed_password", None)
+        return existing
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to update user email='%s': %s", email, exc)
+        raise
+
+
+def delete_user(user_id: str, email: str) -> None:
+    """
+    Hard-delete a user document from Cosmos DB.
+
+    Args:
+        user_id:  Cosmos document ``id`` (item id).
+        email:    Partition key of the document.
+    """
+    try:
+        users_container.delete_item(item=user_id, partition_key=email)
+        logger.info("User deleted — email='%s' id='%s'", email, user_id)
+    except exceptions.CosmosResourceNotFoundError:
+        logger.warning("Delete user: not found email='%s' id='%s'", email, user_id)
+        raise
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to delete user email='%s': %s", email, exc)
         raise
 
 

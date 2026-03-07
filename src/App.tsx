@@ -10,6 +10,8 @@ import Dashboard from "@/pages/Dashboard";
 import LeadWorkbench from "@/pages/LeadWorkbench";
 import ConflictResolution from "@/pages/ConflictResolution";
 import DataIngestion from "@/pages/DataIngestion";
+import AdminUsers from "@/pages/AdminUsers";
+import Reports from "@/pages/Reports";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -51,6 +53,8 @@ const App = () => (
               <Route path="/leads" element={<LeadWorkbench />} />
               <Route path="/conflicts" element={<ConflictResolution />} />
               <Route path="/ingest" element={<DataIngestion />} />
+              <Route path="/admin/users" element={<AdminUsers />} />
+              <Route path="/reports" element={<Reports />} />
             </Route>
 
             <Route path="*" element={<NotFound />} />

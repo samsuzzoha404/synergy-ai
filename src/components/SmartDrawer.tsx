@@ -11,7 +11,7 @@ import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { useLeadActivities, useCreateActivity, useAuditLogs, useUpdateLeadStage } from "@/hooks/useLeads";
+import { useLeadActivities, useCreateActivity, useAuditLogs, useUpdateLeadStage, useBUContacts } from "@/hooks/useLeads";
 import type { AuditLog, LeadActivity } from "@/lib/api";
 
 interface SmartDrawerProps {
@@ -24,13 +24,7 @@ function formatCurrency(value: number) {
   return `RM ${(value / 1_000).toFixed(0)}K`;
 }
 
-const BU_CONTACTS: Record<string, { name: string; phone: string; email: string }> = {
-  "Stucken": { name: "Azrul Hamid", phone: "+60 12-388 4521", email: "azrul.hamid@stucken.com.my" },
-  "Ajiya": { name: "Priya Chandran", phone: "+60 12-771 2034", email: "priya@ajiya.com.my" },
-  "G-Cast": { name: "Wong Khai Seng", phone: "+60 16-223 9810", email: "ks.wong@gcast.com.my" },
-  "Signature": { name: "Nurul Aina", phone: "+60 11-902 5566", email: "nurul@signature.com.my" },
-  "Fiamma": { name: "Ravi Kumar", phone: "+60 17-554 8890", email: "ravi@fiamma.com.my" },
-};
+
 
 export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const [assigning, setAssigning] = useState(false);
@@ -41,6 +35,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const { data: activities = [], isLoading: activitiesLoading } = useLeadActivities(lead?.id ?? null);
   const { mutateAsync: createActivity, isPending: submittingNote } = useCreateActivity(lead?.id ?? "");
   const { data: auditLogs = [], isLoading: auditLoading } = useAuditLogs(lead?.id ?? null);
+  const { data: buContacts = [] } = useBUContacts();
 
   // Stable "historical projects" count per lead — deterministic from lead id
   // to avoid re-generating on every render (T-02: no Math.random() in JSX).
@@ -59,7 +54,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
       await updateLead({ leadId: lead.id, update: { status: 'Assigned' } });
       toast({
         title: '✅ Lead Assigned Successfully',
-        description: `${lead.projectName} assigned to ${lead.matches[0]?.bu}. SMS + email sent to Sales Manager.`,
+        description: `${lead.projectName} assigned to ${lead.matches[0]?.bu}. Email notification sent to admin.`,
         duration: 5000,
       });
       onClose();
@@ -76,13 +71,14 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
 
   const topBU = lead?.matches[0]?.bu;
   // Partial matching: handles cases where the AI returns "Stucken AAC" but
-  // the key in BU_CONTACTS is "Stucken" (BUG-F6).
+  // the BU key in bu_contacts.json is "Stucken" (BUG-F6).
   const contact = topBU
-    ? BU_CONTACTS[topBU] ??
-      Object.entries(BU_CONTACTS).find(
-        ([key]) => topBU.toLowerCase().includes(key.toLowerCase()) ||
-                   key.toLowerCase().includes(topBU.toLowerCase())
-      )?.[1] ??
+    ? buContacts.find((c) => c.bu === topBU) ??
+      buContacts.find(
+        (c) =>
+          topBU.toLowerCase().includes(c.bu.toLowerCase()) ||
+          c.bu.toLowerCase().includes(topBU.toLowerCase()),
+      ) ??
       null
     : null;
 
@@ -291,11 +287,11 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sales Manager</p>
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center text-foreground font-bold text-sm">
-                          {contact.name.split(" ").map(n => n[0]).join("")}
+                          {contact.contact_name.split(" ").map(n => n[0]).join("")}
                         </div>
                         <div>
-                          <p className="text-sm font-bold text-foreground">{contact.name}</p>
-                          <p className="text-xs text-muted-foreground">{topBU} Sales Manager</p>
+                          <p className="text-sm font-bold text-foreground">{contact.contact_name}</p>
+                          <p className="text-xs text-muted-foreground">{contact.contact_title}</p>
                         </div>
                       </div>
                       <div className="space-y-2 pt-1">
@@ -321,7 +317,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                       Notification Preview
                     </p>
                     <div className="bg-card rounded-lg p-3 border border-border text-xs text-muted-foreground leading-relaxed">
-                      📱 <strong className="text-foreground">SMS to {contact?.name}:</strong><br />
+                      � <strong className="text-foreground">Email to {contact?.contact_name}:</strong><br />
                       "New lead assigned: {lead.projectName} ({formatCurrency(lead.value)}) — {lead.location}. Please review and initiate contact within 24 hours. — Synergy Genius"
                     </div>
                   </div>

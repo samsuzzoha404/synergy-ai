@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { TableProperties, Info, LayoutGrid, List } from "lucide-react";
+import { TableProperties, Info, LayoutGrid, List, ChevronLeft, ChevronRight } from "lucide-react";
 import { LeadsTable } from "@/components/LeadsTable";
 import { LeadPipeline } from "@/components/LeadPipeline";
 import { SmartDrawer } from "@/components/SmartDrawer";
 import { type Lead } from "@/data/mockData";
-import { useLeads } from "@/hooks/useLeads";
+import { useLeads, PAGE_SIZE } from "@/hooks/useLeads";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -15,8 +15,11 @@ function formatCurrency(value: number) {
 }
 
 export default function LeadWorkbench() {
-  // All leads flow from the hook — RBAC filtering happens inside useLeads().
-  const { data: leads = [], isLoading } = useLeads();
+  const [page, setPage] = useState(0);
+  const { data, isLoading } = useLeads(page);
+  const leads = data?.leads ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const [view, setView] = useState<"list" | "pipeline">("list");
   const [pipelineLead, setPipelineLead] = useState<Lead | null>(null);
 
@@ -84,7 +87,7 @@ export default function LeadWorkbench() {
           ))
         ) : (
           [
-            { label: "Total Leads", value: leads.length.toString(), sub: "in workbench", color: "text-primary", bg: "bg-primary-light" },
+            { label: "Total Leads", value: (total || leads.length).toString(), sub: `page ${page + 1} of ${totalPages}`, color: "text-primary", bg: "bg-primary-light" },
             { label: "Pipeline Value", value: formatCurrency(totalValue), sub: "gross dev. value", color: "text-success", bg: "bg-success-light" },
             { label: "Closed Won", value: wonLeads.toString(), sub: "leads won", color: "text-info", bg: "bg-info-light" },
             { label: "Conflicts", value: duplicates.toString(), sub: "need review", color: "text-destructive", bg: "bg-destructive/10" },
@@ -113,7 +116,34 @@ export default function LeadWorkbench() {
 
       {/* Content — List or Pipeline */}
       {view === "list" ? (
-        <LeadsTable leads={leads} />
+        <>
+          <LeadsTable leads={leads} />
+          {/* Pagination controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between bg-card border border-border rounded-xl px-4 py-3">
+              <p className="text-xs text-muted-foreground">
+                Showing <span className="font-semibold text-foreground">{page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}</span> of <span className="font-semibold text-foreground">{total}</span> leads
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" /> Prev
+                </button>
+                <span className="text-xs font-semibold text-foreground px-2">{page + 1} / {totalPages}</span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Next <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <LeadPipeline leads={leads} onLeadClick={setPipelineLead} />

@@ -59,7 +59,8 @@ SECRET_KEY: str = os.environ.get(
     "synergy-hackathon-secret-key-2026-replace-before-prod",
 )
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8  # 8-hour sessions for demo convenience
+ACCESS_TOKEN_EXPIRE_MINUTES = 30           # Short-lived access token (refreshed silently)
+REFRESH_TOKEN_EXPIRE_DAYS   = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))  # 7-day sliding window
 
 # ---------------------------------------------------------------------------
 # Password hashing — bcrypt via passlib
@@ -143,9 +144,15 @@ class CurrentUser(BaseModel):
     bu: Optional[str] = None  # Business Unit — relevant for Sales_Rep only
 
 
+class RefreshRequest(BaseModel):
+    """Inbound body for POST /api/auth/refresh."""
+    refresh_token: str
+
+
 class TokenResponse(BaseModel):
-    """Response envelope returned by POST /api/auth/login on success."""
+    """Response envelope returned by POST /api/auth/login (and /api/auth/refresh) on success."""
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     user: Dict[str, Any]   # Mirrors CurrentUser fields for the frontend
 
@@ -159,7 +166,7 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """
-    Signs a JWT with the app secret key.
+    Signs a short-lived access JWT (default: ACCESS_TOKEN_EXPIRE_MINUTES).
 
     Args:
         data:          Claims to embed (sub, name, role, bu, etc.).
@@ -169,11 +176,66 @@ def create_access_token(
         Signed JWT string.
     """
     to_encode = data.copy()
+    to_encode["type"] = "access"
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode["exp"] = expire
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token(data: Dict[str, Any]) -> str:
+    """
+    Signs a long-lived refresh JWT (REFRESH_TOKEN_EXPIRE_DAYS).
+    Includes a ``type: "refresh"`` claim so it cannot be used as an access token.
+
+    Args:
+        data: Claims to embed (sub, name, role, bu). Same payload as access token.
+
+    Returns:
+        Signed JWT string.
+    """
+    to_encode = data.copy()
+    to_encode["type"] = "refresh"
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_refresh_token(token: str) -> CurrentUser:
+    """
+    Decodes and validates a refresh JWT.
+    Raises 401 if the token is expired, missing, or not typed as "refresh".
+
+    Args:
+        token: Raw refresh token string from the request body.
+
+    Returns:
+        CurrentUser — the decoded identity payload.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Refresh token invalid or expired. Please log in again.",
+        headers={
+            "WWW-Authenticate": "Bearer",
+            "X-Token-Type": "refresh_expired",
+        },
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise credentials_exception
+        email: Optional[str] = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        return CurrentUser(
+            email=email,
+            name=payload.get("name", "Unknown User"),
+            role=payload.get("role", "Sales_Rep"),
+            bu=payload.get("bu"),
+        )
+    except JWTError:
+        raise credentials_exception
 
 
 def verify_token(token: str) -> CurrentUser:
@@ -196,6 +258,9 @@ def verify_token(token: str) -> CurrentUser:
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # Reject refresh tokens presented as access tokens
+        if payload.get("type") == "refresh":
+            raise credentials_exception
         email: Optional[str] = payload.get("sub")
         if email is None:
             raise credentials_exception

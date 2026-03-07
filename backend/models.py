@@ -57,6 +57,25 @@ class LeadCreate(BaseModel):
         description="Current pipeline stage (e.g., Prospecting, Qualified, Proposal, Negotiation, Closed).",
         examples=["Prospecting"],
     )
+    developer: Optional[str] = Field(
+        default=None,
+        max_length=256,
+        description="Name of the property developer or main contractor.",
+        examples=["Avantro Development Sdn Bhd"],
+    )
+    floors: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=200,
+        description="Number of floors / storeys in the building.",
+        examples=[42],
+    )
+    gfa: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Gross floor area in square feet.",
+        examples=[850000],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,9 +233,12 @@ class LeadActivity(BaseModel):
 
 
 class LeadActivityCreate(BaseModel):
-    """Inbound payload for POST /api/leads/{lead_id}/activities."""
+    """Inbound payload for POST /api/leads/{lead_id}/activities.
 
-    user_name: str = Field(..., min_length=1, max_length=128, examples=["Ahmad Razif"])
+    Note: user_name is intentionally omitted from the inbound body — it is always
+    sourced from the authenticated JWT (current_user.name) so it cannot be spoofed.
+    """
+
     activity_type: str = Field(default="Note", examples=["Note"])
     content: str = Field(..., min_length=1)
 
@@ -321,9 +343,9 @@ class LeadResponse(BaseModel):
             status=lead.status,
             is_duplicate=lead.is_duplicate,
             ai_analysis=lead.ai_analysis,
-            developer=extra.get("developer"),
-            floors=extra.get("floors"),
-            gfa=extra.get("gfa"),
+            developer=extra.get("developer") or lead.developer,
+            floors=extra.get("floors") if extra.get("floors") is not None else lead.floors,
+            gfa=extra.get("gfa") if extra.get("gfa") is not None else lead.gfa,
             created_date=extra.get("created_date"),
             assigned_to=extra.get("assigned_to"),
         )
@@ -381,3 +403,41 @@ class BulkIngestResponse(BaseModel):
         default_factory=list,
         description="List of row-level error messages for rows that failed to parse or save.",
     )
+
+
+# ---------------------------------------------------------------------------
+# 10. Admin User Management
+# ---------------------------------------------------------------------------
+
+VALID_ROLES = {"Admin", "Sales_Rep"}
+VALID_BUS = {
+    "Stucken AAC", "Ajiya Metal / Glass", "G-Cast", "Signature Alliance",
+    "Signature Kitchen", "Fiamma Holding", "PPG Hing",
+}
+
+
+class UserCreate(BaseModel):
+    """Payload for POST /api/admin/users — create a new user."""
+    email: str = Field(..., min_length=5, max_length=256)
+    name: str = Field(..., min_length=2, max_length=128)
+    role: str = Field(..., description="'Admin' or 'Sales_Rep'")
+    bu: Optional[str] = Field(default=None, description="Required for Sales_Rep; null for Admin.")
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class UserUpdate(BaseModel):
+    """Payload for PATCH /api/admin/users/{user_id} — partial update."""
+    name: Optional[str] = Field(default=None, min_length=2, max_length=128)
+    role: Optional[str] = Field(default=None)
+    bu: Optional[str] = Field(default=None)
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128,
+                                    description="If omitted, existing password is unchanged.")
+
+
+class UserProfile(BaseModel):
+    """Safe user representation returned by the admin endpoints (no password)."""
+    id: str
+    email: str
+    name: str
+    role: str
+    bu: Optional[str] = None

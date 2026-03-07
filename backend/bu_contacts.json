@@ -1,0 +1,37 @@
+[
+  {
+    "bu": "Stucken",
+    "contact_name": "Azrul Hamid",
+    "contact_title": "Sales Manager",
+    "phone": "+60 12-388 4521",
+    "email": "azrul.hamid@stucken.com.my"
+  },
+  {
+    "bu": "Ajiya",
+    "contact_name": "Priya Chandran",
+    "contact_title": "Sales Manager",
+    "phone": "+60 12-771 2034",
+    "email": "priya@ajiya.com.my"
+  },
+  {
+    "bu": "G-Cast",
+    "contact_name": "Wong Khai Seng",
+    "contact_title": "Sales Manager",
+    "phone": "+60 16-223 9810",
+    "email": "ks.wong@gcast.com.my"
+  },
+  {
+    "bu": "Signature",
+    "contact_name": "Nurul Aina",
+    "contact_title": "Sales Manager",
+    "phone": "+60 11-902 5566",
+    "email": "nurul@signature.com.my"
+  },
+  {
+    "bu": "Fiamma",
+    "contact_name": "Ravi Kumar",
+    "contact_title": "Sales Manager",
+    "phone": "+60 17-554 8890",
+    "email": "ravi@fiamma.com.my"
+  }
+]

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { AlertTriangle, GitMerge, Trash2, Copy, CheckCircle, ChevronRight, Shield, Loader2 } from "lucide-react";
-import { existingDuplicateLead } from "@/data/mockData";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
@@ -61,7 +60,8 @@ export default function ConflictResolution() {
 
   // Primary data sources: live API conflicts + leads cache
   const { data: apiConflicts = [], isLoading } = useConflicts();
-  const { data: allLeads = [] } = useLeads();
+  const { data: allLeadsData = null } = useLeads();
+  const allLeads = allLeadsData?.leads ?? [];
   const { mutateAsync: resolveConflict } = useResolveConflict();
 
   // The active live conflict (top of queue), if any
@@ -78,22 +78,30 @@ export default function ConflictResolution() {
     : null;
 
   // Determine which lead data to show in the comparison UI:
-  // Priority: real API lead from cache → RBAC-filtered mock duplicate → null
+  // Priority: real API new lead → any duplicate-flagged lead from cache → null
   const duplicateLead = apiNewLead ?? allLeads.find((l) => l.isDuplicate) ?? null;
-  const existing = apiExistingLead
-    ? {
-        id: apiExistingLead.id,
-        projectName: apiExistingLead.projectName,
-        location: apiExistingLead.location,
-        value: apiExistingLead.value,
-        stage: apiExistingLead.stage,
-        developer: apiExistingLead.developer,
-        status: apiExistingLead.status,
-        createdDate: apiExistingLead.createdDate,
-      }
-    : existingDuplicateLead;
 
-  // Total conflict count: real API count only (BUG-M4 already fixed in sidebar)
+  // For the existing/matched record: try the matched lead from cache,
+  // then fall back to any non-duplicate lead that isn't the same as duplicateLead.
+  const existingFromCache = apiExistingLead ?? (
+    duplicateLead
+      ? allLeads.find((l) => !l.isDuplicate && l.id !== duplicateLead.id) ?? null
+      : null
+  );
+  const existing = existingFromCache
+    ? {
+        id: existingFromCache.id,
+        projectName: existingFromCache.projectName,
+        location: existingFromCache.location,
+        value: existingFromCache.value,
+        stage: existingFromCache.stage,
+        developer: existingFromCache.developer,
+        status: existingFromCache.status,
+        createdDate: existingFromCache.createdDate,
+      }
+    : null;
+
+  // Total conflict count from real API only
   const totalConflicts = apiConflicts.length > 0 ? apiConflicts.length : (duplicateLead && !resolved ? 1 : 0);
 
   const handleAction = async (action: "merge" | "discard" | "keep") => {
@@ -232,7 +240,7 @@ export default function ConflictResolution() {
     );
   }
 
-  // Guard: no conflict at all — or no mock data to fall back to
+  // Guard: no conflict at all
   if (!duplicateLead) {
     return (
       <div className="p-6 flex flex-col items-center justify-center min-h-[60vh]">
@@ -245,19 +253,16 @@ export default function ConflictResolution() {
     );
   }
 
-  // Build comparison fields dynamically.
-  // When real API lead data is available, use it without any hardcoded highlights.
-  // When falling back to the mock duplicate, keep the original demo highlights.
-  const isRealData = !!apiNewLead;
-  const fields = [
-    { label: "Project Name", newVal: duplicateLead.projectName, existingVal: existing.projectName, highlight: isRealData ? "" : "Twin Towers", match: isRealData ? duplicateLead.projectName === existing.projectName : true },
-    { label: "Location",    newVal: duplicateLead.location,    existingVal: existing.location,    highlight: isRealData ? "" : "KLCC",        match: isRealData ? duplicateLead.location === existing.location : true },
-    { label: "Developer",   newVal: duplicateLead.developer,   existingVal: existing.developer,   highlight: isRealData ? "" : "Petronas",    match: isRealData ? duplicateLead.developer === existing.developer : true },
+  // Build comparison fields from real lead data only.
+  const fields = existing ? [
+    { label: "Project Name", newVal: duplicateLead.projectName, existingVal: existing.projectName, highlight: "", match: duplicateLead.projectName.toLowerCase() === existing.projectName.toLowerCase() },
+    { label: "Location",    newVal: duplicateLead.location,    existingVal: existing.location,    highlight: "", match: duplicateLead.location.toLowerCase() === existing.location.toLowerCase() },
+    { label: "Developer",   newVal: duplicateLead.developer,   existingVal: existing.developer,   highlight: "", match: duplicateLead.developer?.toLowerCase() === existing.developer?.toLowerCase() },
     { label: "Value",   newVal: formatCurrency(duplicateLead.value), existingVal: formatCurrency(existing.value), highlight: "", match: false },
-    { label: "Stage",   newVal: duplicateLead.stage,  existingVal: existing.stage,  highlight: "", match: false },
+    { label: "Stage",   newVal: duplicateLead.stage,  existingVal: existing.stage,  highlight: "", match: duplicateLead.stage === existing.stage },
     { label: "Status",  newVal: duplicateLead.status, existingVal: existing.status, highlight: "", match: false },
     { label: "Created", newVal: duplicateLead.createdDate, existingVal: existing.createdDate, highlight: "", match: false },
-  ];
+  ] : [];
 
   return (
     <div className="p-4 md:p-6 space-y-5 animate-fade-in">
@@ -284,8 +289,9 @@ export default function ConflictResolution() {
         <div>
           <p className="text-sm font-bold text-destructive">Duplicate Alert: High-confidence match found</p>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            AI detected <strong className="text-foreground">L003 "Twin Towers Reno"</strong> is a likely duplicate of <strong className="text-foreground">L003-ORIG</strong>. 
-            Matching fields are <mark className="bg-warning/40 px-0.5 rounded-sm font-semibold">highlighted in yellow</mark>. Please review and take action.
+            AI detected <strong className="text-foreground">"{duplicateLead.projectName}"</strong> is a likely duplicate
+            {existing ? <> of <strong className="text-foreground">"{existing.projectName}"</strong></> : null}.
+            Matching fields are highlighted below. Please review and take action.
           </p>
         </div>
       </div>
@@ -293,26 +299,31 @@ export default function ConflictResolution() {
       {/* AI Similarity Score */}
       <div className="bg-primary-light border border-primary/20 rounded-xl p-4 flex items-center gap-5">
         <div className="flex-shrink-0 text-center">
-          <p className="text-4xl font-black text-primary">94%</p>
+          <p className="text-4xl font-black text-primary">
+            {activeConflict ? `${Math.round(activeConflict.similarity_score * 100)}%` : "—"}
+          </p>
           <p className="text-xs text-muted-foreground font-medium">Similarity</p>
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold text-foreground">High-confidence duplicate detected</p>
+          <p className="text-sm font-bold text-foreground">High-confidence duplicate detected by AI embedding engine</p>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            Matched on: Project Name (87%), Developer (100%), Location (92%), Value proximity (98%)
+            Cosine similarity of lead embeddings exceeded the duplicate threshold (≥ 92%).
+            Review the fields below and choose how to resolve this conflict.
           </p>
-          <div className="flex flex-wrap gap-2 mt-2.5">
-            {[
-              { label: "Name", score: 87 },
-              { label: "Developer", score: 100 },
-              { label: "Location", score: 92 },
-              { label: "Value", score: 98 },
-            ].map((m) => (
-              <span key={m.label} className="text-xs font-semibold text-primary bg-primary/10 border border-primary/20 rounded-full px-2.5 py-0.5">
-                {m.label}: {m.score}%
-              </span>
-            ))}
-          </div>
+          {existing && (
+            <div className="flex flex-wrap gap-2 mt-2.5">
+              {([
+                { label: "Name",      match: duplicateLead.projectName.toLowerCase() === existing.projectName.toLowerCase() },
+                { label: "Location",  match: duplicateLead.location.toLowerCase() === existing.location.toLowerCase() },
+                { label: "Developer", match: duplicateLead.developer?.toLowerCase() === existing.developer?.toLowerCase() },
+                { label: "Stage",     match: duplicateLead.stage === existing.stage },
+              ] as { label: string; match: boolean }[]).filter((m) => m.match).map((m) => (
+                <span key={m.label} className="text-xs font-semibold text-primary bg-primary/10 border border-primary/20 rounded-full px-2.5 py-0.5">
+                  {m.label} matched
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -328,7 +339,7 @@ export default function ConflictResolution() {
           <div className="flex items-center gap-2 px-4 py-3 bg-success-light">
             <span className="w-2 h-2 rounded-full bg-success" />
             <span className="text-xs font-bold text-success uppercase tracking-wide">Existing Record</span>
-            <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">{existing.id}</span>
+            <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">{existing?.id ?? "—"}</span>
           </div>
         </div>
 
@@ -353,14 +364,14 @@ export default function ConflictResolution() {
           <div className="border border-success/30 rounded-xl overflow-hidden">
             <div className="bg-success-light px-4 py-2.5 border-b border-success/20 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-success" />
-              <span className="text-xs font-bold text-success">Existing · {existing.id}</span>
+              <span className="text-xs font-bold text-success">Existing · {existing?.id ?? "—"}</span>
             </div>
             <div className="p-4 space-y-3">
               {fields.map((f) => (
                 <div key={f.label}>
                   <p className="text-xs font-medium text-muted-foreground">{f.label}</p>
                   <p className="text-sm font-semibold text-foreground mt-0.5">
-                    <HighlightText text={f.existingVal} highlight={f.highlight} />
+                    <HighlightText text={f.existingVal ?? "—"} highlight={f.highlight} />
                   </p>
                 </div>
               ))}
@@ -384,7 +395,7 @@ export default function ConflictResolution() {
         <div>
           <p className="text-sm font-bold text-foreground">AI Recommendation: Merge Records</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Keep the existing record (L003-ORIG) as primary. Update with the newer contact date and discard L003.
+            Keep the existing record as primary. Merge any unique data from the incoming lead and discard the duplicate.
           </p>
         </div>
       </div>

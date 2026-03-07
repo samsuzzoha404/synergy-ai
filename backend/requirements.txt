@@ -31,3 +31,13 @@ python-jose[cryptography]==3.3.0   # JWT encode/decode (jose.jwt)
 cryptography==43.0.3               # Required by python-jose[cryptography] for RSA/EC
 passlib[bcrypt]==1.7.4             # bcrypt password hashing for Cosmos DB Users container
 bcrypt==4.2.1                      # Underlying bcrypt implementation used by passlib
+
+# --- Rate Limiting ---
+slowapi==0.1.9                     # IP-based rate limiting middleware for FastAPI (wraps `limits`)
+limits==3.14.0                     # Backend library used by slowapi for rate counters
+
+# --- Azure Monitor / Application Insights ---
+# Provides OpenTelemetry auto-instrumentation: request traces, dependency tracking,
+# exception telemetry, log correlation, and live metrics streamed to App Insights.
+# No-op when APPLICATIONINSIGHTS_CONNECTION_STRING env var is absent (local dev).
+azure-monitor-opentelemetry==1.6.4

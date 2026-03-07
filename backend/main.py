@@ -26,24 +26,34 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 import ai_engine
 import database
 from auth import (
     CurrentUser,
     LoginRequest,
+    RefreshRequest,
     TokenResponse,
     bootstrap_demo_users,
     create_access_token,
+    create_refresh_token,
     get_current_user,
     verify_password,
+    verify_refresh_token,
 )
 from models import AIAnalysis, AuditLog, BulkIngestResponse, ConflictResolutionUpdate, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
+import telemetry
+import notifications
 
 # ---------------------------------------------------------------------------
 # Logging — configure once at startup
@@ -56,11 +66,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# In-memory vector cache for fast duplicate detection (hackathon shortcut).
-# In production: replace with Azure Cosmos DB Vector Search or Azure AI Search.
-# Structure: List of {"id": str, "vector": List[float]}
+# Azure Monitor — must be configured BEFORE FastAPI() is instantiated so that
+# ASGI middleware is injected at the right point in the stack.
+# No-op if APPLICATIONINSIGHTS_CONNECTION_STRING is absent (local dev).
 # ---------------------------------------------------------------------------
-_vector_cache: List[Dict[str, Any]] = []
+telemetry.setup_azure_monitor()
+
+# ---------------------------------------------------------------------------
+# Rate Limiter — IP-based, in-memory counters (resets on restart).
+# Override default limits via RATE_LIMIT_* env vars for tenant-specific tuning.
+# ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address)
+
+# Default limits per endpoint class (override via env vars)
+LIMIT_AUTH   = os.getenv("RATE_LIMIT_AUTH",   "5/minute")    # login — brute-force guard
+LIMIT_WRITE  = os.getenv("RATE_LIMIT_WRITE",  "30/minute")   # AI ingestion pipeline
+LIMIT_BULK   = os.getenv("RATE_LIMIT_BULK",   "5/minute")    # CSV bulk — most expensive
+LIMIT_PATCH  = os.getenv("RATE_LIMIT_PATCH",  "60/minute")   # PATCH endpoints
+LIMIT_READ   = os.getenv("RATE_LIMIT_READ",   "200/minute")  # GET endpoints
+
+# Suppress noisy Azure SDK / urllib3 HTTP wire logs so uvicorn access
+# logs (GET /api/leads 200 OK) are clearly visible in the terminal.
+for _noisy_logger in (
+    "azure.core.pipeline.policies.http_logging_policy",
+    "azure.cosmos",
+    "urllib3.connectionpool",
+    "azure",
+):
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
+
+# ---------------------------------------------------------------------------
+# Duplicate detection threshold
+# ---------------------------------------------------------------------------
 
 DUPLICATE_SIMILARITY_THRESHOLD = 0.92  # Cosine similarity ≥ 0.92 → flag as duplicate
 
@@ -74,33 +111,6 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     Modern FastAPI lifespan context manager.
     Runs startup logic before yield, shutdown logic after yield.
     """
-    global _vector_cache
-    logger.info("Startup: Hydrating vector cache from Cosmos DB...")
-    try:
-        # asyncio.wait_for + asyncio.to_thread ensures:
-        #   1. The blocking Cosmos DB call runs in a thread pool (non-blocking).
-        #   2. If Cosmos DB is unreachable or slow, startup aborts after 15 s
-        #      instead of hanging indefinitely (which caused uvicorn to accept
-        #      TCP connections but never process requests — BUG-STARTUP).
-        existing_leads = await asyncio.wait_for(
-            asyncio.to_thread(database.get_all_leads),
-            timeout=15.0,
-        )
-        for doc in existing_leads:
-            lead_id = doc.get("id")
-            vector = doc.get("vector", [])
-            if lead_id and vector:
-                _vector_cache.append({"id": lead_id, "vector": vector})
-        logger.info("Vector cache hydrated — %d leads loaded.", len(_vector_cache))
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Vector cache hydration timed out (>15 s) — "
-            "starting with empty cache. Duplicate detection will still work "
-            "for leads ingested in this session."
-        )
-    except Exception as exc:
-        logger.warning("Could not hydrate vector cache on startup: %s", exc)
-
     # Seed demo users if the Users container is empty (first-time startup).
     try:
         await asyncio.wait_for(
@@ -133,6 +143,13 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
+# Rate Limiter — attach to app state and register 429 handler
+# ---------------------------------------------------------------------------
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# ---------------------------------------------------------------------------
 # CORS Middleware
 # Read allowed origins from ALLOWED_ORIGINS env var (comma-separated).
 # Falls back to "*" only when the variable is absent (local dev convenience).
@@ -157,6 +174,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# Azure Monitor — FastAPI instrumentation (must be after all middleware is added)
+# Wraps every route so traces use template paths (/api/leads/{id}) not raw URLs.
+# ---------------------------------------------------------------------------
+telemetry.instrument_fastapi_app(app)
+
+
+# ---------------------------------------------------------------------------
+# Global exception handler — catches any unhandled exception that escapes all
+# route handlers. Records it to App Insights Failures blade, then returns a
+# safe 500 JSON response (never leaks stack traces to the client).
+# ---------------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(req: Request, exc: Exception) -> Response:
+    telemetry.record_exception(
+        exc,
+        {"http.method": req.method, "http.url": str(req.url)},
+    )
+    logger.exception(
+        "Unhandled 500 on %s %s", req.method, req.url.path
+    )
+    return Response(
+        content='{"detail": "An unexpected internal error occurred. Our team has been notified."}',
+        status_code=500,
+        media_type="application/json",
+    )
+
 
 def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     """
@@ -173,30 +217,30 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 
-def _check_duplicate(new_vector: List[float], new_id: str) -> bool:
+def _check_duplicate(new_vector: List[float], new_id: str) -> Tuple[bool, str, float]:
     """
-    Check the in-memory vector cache for a lead semantically similar to the new one.
-    If a duplicate is found, the conflict is saved to Cosmos DB and True is returned.
-
-    Args:
-        new_vector: Embedding of the new lead.
-        new_id:     UUID of the new lead (to avoid self-comparison).
+    Check for a semantically near-identical lead by comparing the new embedding
+    against ALL lead vectors stored in Cosmos DB.
 
     Returns:
-        True if a near-duplicate exists above the similarity threshold.
+        Tuple of (is_duplicate, matched_lead_id, similarity_score).
+        matched_lead_id is "" and score is 0.0 when no duplicate is found.
     """
-    for cached in _vector_cache:
+    try:
+        existing_vectors = database.get_all_lead_vectors()
+    except Exception as exc:
+        logger.error("Duplicate check DB query failed — skipping check: %s", exc)
+        return False, "", 0.0
+
+    for cached in existing_vectors:
         if cached["id"] == new_id:
             continue
         score = _cosine_similarity(new_vector, cached["vector"])
         if score >= DUPLICATE_SIMILARITY_THRESHOLD:
             logger.warning(
                 "Duplicate detected — new_lead='%s' matches existing='%s' score=%.4f",
-                new_id,
-                cached["id"],
-                score,
+                new_id, cached["id"], score,
             )
-            # Persist conflict document for human review
             conflict_doc = {
                 "id": str(uuid.uuid4()),
                 "lead_id": new_id,
@@ -208,8 +252,8 @@ def _check_duplicate(new_vector: List[float], new_id: str) -> bool:
                 database.save_conflict(conflict_doc)
             except Exception:
                 logger.exception("Failed to persist conflict document.")
-            return True
-    return False
+            return True, cached["id"], score
+    return False, "", 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +265,8 @@ def _check_duplicate(new_vector: List[float], new_id: str) -> bool:
     tags=["Auth"],
     summary="Authenticate with email + password and receive a JWT",
 )
-def login(payload: LoginRequest) -> TokenResponse:
+@limiter.limit(LIMIT_AUTH)
+def login(request: Request, payload: LoginRequest) -> TokenResponse:
     """
     Validates credentials against the Cosmos DB Users container.
     Passwords are compared using bcrypt (never stored in plaintext).
@@ -236,12 +281,14 @@ def login(payload: LoginRequest) -> TokenResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
-    token = create_access_token({
+    token_claims = {
         "sub": user["email"],
         "name": user["name"],
         "role": user["role"],
         "bu": user.get("bu"),
-    })
+    }
+    token = create_access_token(token_claims)
+    refresh = create_refresh_token(token_claims)
     user_profile = {
         "email": user["email"],
         "name": user["name"],
@@ -249,7 +296,44 @@ def login(payload: LoginRequest) -> TokenResponse:
         "bu": user.get("bu"),
     }
     logger.info("Login successful — user='%s' role='%s'", user["email"], user["role"])
-    return TokenResponse(access_token=token, user=user_profile)
+    return TokenResponse(access_token=token, refresh_token=refresh, user=user_profile)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/auth/refresh — Exchange a refresh token for a new access token
+# ---------------------------------------------------------------------------
+@app.post(
+    "/api/auth/refresh",
+    response_model=TokenResponse,
+    tags=["Auth"],
+    summary="Silently renew an access token using the long-lived refresh token",
+)
+@limiter.limit(LIMIT_AUTH)
+def refresh_token_endpoint(request: Request, payload: RefreshRequest) -> TokenResponse:
+    """
+    Validates the refresh token, issues a fresh access token AND a new refresh
+    token (rolling renewal), and returns both along with the user profile.
+
+    The client should replace both stored tokens on success.
+    Returns 401 if the refresh token is expired or malformed.
+    """
+    user_identity = verify_refresh_token(payload.refresh_token)
+    token_claims = {
+        "sub": user_identity.email,
+        "name": user_identity.name,
+        "role": user_identity.role,
+        "bu": user_identity.bu,
+    }
+    new_access = create_access_token(token_claims)
+    new_refresh = create_refresh_token(token_claims)   # rolling window
+    user_profile = {
+        "email": user_identity.email,
+        "name": user_identity.name,
+        "role": user_identity.role,
+        "bu": user_identity.bu,
+    }
+    logger.info("Token refreshed — user='%s'", user_identity.email)
+    return TokenResponse(access_token=new_access, refresh_token=new_refresh, user=user_profile)
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +349,189 @@ def health_check() -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/bu-contacts — Business Unit Sales Manager Directory
+# ---------------------------------------------------------------------------
+_BU_CONTACTS_PATH = os.path.join(os.path.dirname(__file__), "bu_contacts.json")
+
+
+@app.get("/api/bu-contacts", tags=["System"], summary="List BU sales manager contacts")
+@limiter.limit("60/minute")
+def get_bu_contacts(request: Request) -> List[Dict[str, str]]:
+    """
+    Returns the BU sales manager directory from ``bu_contacts.json``.
+
+    To update contacts, edit ``backend/bu_contacts.json`` — no code change needed.
+    Authentication is NOT required so the drawer can show contact info to all users.
+    """
+    import json as _json
+    try:
+        with open(_BU_CONTACTS_PATH, encoding="utf-8") as fh:
+            return _json.load(fh)
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="BU contacts file not found on server.")
+    except Exception as exc:
+        logger.exception("Failed to read bu_contacts.json: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not load BU contacts.")
+
+
+# ---------------------------------------------------------------------------
+# Admin User Management  —  POST / GET / PATCH / DELETE /api/admin/users
+# All endpoints require Admin role.  Sales_Reps receive 403.
+# ---------------------------------------------------------------------------
+from models import UserCreate, UserUpdate, UserProfile  # noqa: E402  (already imported indirectly)
+
+
+def _require_admin(current_user: CurrentUser) -> None:
+    """Raise 403 if the caller is not an Admin."""
+    if current_user.role != "Admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required.",
+        )
+
+
+@app.get(
+    "/api/admin/users",
+    response_model=List[UserProfile],
+    tags=["Admin"],
+    summary="List all users",
+)
+@limiter.limit(LIMIT_READ)
+def admin_list_users(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[UserProfile]:
+    """Return all user accounts. Admin only."""
+    _require_admin(current_user)
+    users = database.list_users()
+    return [UserProfile(**u) for u in users]
+
+
+@app.post(
+    "/api/admin/users/cleanup",
+    tags=["Admin"],
+    summary="Remove duplicate user documents from Cosmos DB",
+)
+@limiter.limit(LIMIT_WRITE)
+def admin_cleanup_users(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Hard-delete duplicate user docs created by accidental bootstrap re-runs. Admin only."""
+    _require_admin(current_user)
+    deleted = database.cleanup_duplicate_users()
+    logger.info("Admin '%s' ran user cleanup — %d duplicates removed.", current_user.email, deleted)
+    return {"deleted": deleted, "message": f"{deleted} duplicate user document(s) removed."}
+
+
+@app.post(
+    "/api/admin/users",
+    response_model=UserProfile,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Admin"],
+    summary="Create a new user",
+)
+@limiter.limit(LIMIT_WRITE)
+async def admin_create_user(
+    request: Request,
+    payload: UserCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> UserProfile:
+    """Create a new user account. Admin only."""
+    _require_admin(current_user)
+    # Validate role and BU
+    if payload.role not in {"Admin", "Sales_Rep"}:
+        raise HTTPException(status_code=422, detail="role must be 'Admin' or 'Sales_Rep'.")
+    if payload.role == "Sales_Rep" and not payload.bu:
+        raise HTTPException(status_code=422, detail="bu is required for Sales_Rep role.")
+    # Prevent duplicate email
+    if database.get_user_by_email(payload.email.lower()):
+        raise HTTPException(status_code=409, detail=f"Email already registered: {payload.email}")
+    from auth import get_password_hash as _hash
+    doc = {
+        "id": str(uuid.uuid4()),
+        "email": payload.email.lower(),
+        "name": payload.name,
+        "role": payload.role,
+        "bu": payload.bu if payload.role == "Sales_Rep" else None,
+        "hashed_password": _hash(payload.password),
+    }
+    database.save_user(doc)
+    logger.info("Admin '%s' created user '%s'", current_user.email, doc["email"])
+    doc.pop("hashed_password", None)
+    return UserProfile(**doc)
+
+
+@app.patch(
+    "/api/admin/users/{user_id}",
+    response_model=UserProfile,
+    tags=["Admin"],
+    summary="Update a user",
+)
+@limiter.limit(LIMIT_WRITE)
+async def admin_update_user(
+    request: Request,
+    user_id: str,
+    payload: UserUpdate,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> UserProfile:
+    """Update name, role, BU, or password for an existing user. Admin only."""
+    _require_admin(current_user)
+    # Validate role if provided
+    if payload.role and payload.role not in {"Admin", "Sales_Rep"}:
+        raise HTTPException(status_code=422, detail="role must be 'Admin' or 'Sales_Rep'.")
+    # Build the fields dict — only include keys the caller actually sent
+    from auth import get_password_hash as _hash
+    fields: Dict[str, Any] = {}
+    if payload.name is not None:
+        fields["name"] = payload.name
+    if payload.role is not None:
+        fields["role"] = payload.role
+        if payload.role == "Admin":
+            fields["bu"] = None
+    if payload.bu is not None:
+        fields["bu"] = payload.bu
+    if payload.password is not None:
+        fields["hashed_password"] = _hash(payload.password)
+    # Get existing user to resolve email from id
+    all_users = database.list_users()
+    target = next((u for u in all_users if u["id"] == user_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    updated = database.update_user(user_id, target["email"], fields)
+    logger.info("Admin '%s' updated user id='%s'", current_user.email, user_id)
+    return UserProfile(**updated)
+
+
+@app.delete(
+    "/api/admin/users/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Admin"],
+    summary="Delete a user",
+)
+@limiter.limit(LIMIT_WRITE)
+async def admin_delete_user(
+    request: Request,
+    user_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Hard-delete a user account. Admin only. Cannot self-delete."""
+    _require_admin(current_user)
+    all_users = database.list_users()
+    target = next((u for u in all_users if u["id"] == user_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target["email"] == current_user.email:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account.")
+    from azure.cosmos.exceptions import CosmosResourceNotFoundError
+    try:
+        database.delete_user(user_id, target["email"])
+    except CosmosResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+    logger.info("Admin '%s' deleted user id='%s' email='%s'", current_user.email, user_id, target["email"])
+
+
+# ---------------------------------------------------------------------------
 # POST /api/leads — Core Ingestion & AI Analysis Pipeline
 # ---------------------------------------------------------------------------
 @app.post(
@@ -274,7 +541,9 @@ def health_check() -> Dict[str, str]:
     tags=["Leads"],
     summary="Ingest a new lead and trigger AI analysis",
 )
+@limiter.limit(LIMIT_WRITE)
 async def create_lead(
+    request: Request,
     payload: LeadCreate,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> LeadResponse:
@@ -308,9 +577,9 @@ async def create_lead(
             detail=f"Azure OpenAI embedding service error: {exc}",
         )
 
-    # --- Step 2: Duplicate detection (in-memory cosine similarity) ---
+    # --- Step 2: Duplicate detection (Cosmos DB cosine similarity — restart & multi-instance safe) ---
     new_id = str(uuid.uuid4())
-    is_duplicate = _check_duplicate(vector, new_id)
+    is_duplicate, matched_lead_id, dup_score = _check_duplicate(vector, new_id)
 
     # --- Step 3: AI lead analysis (GPT-4o) ---
     try:
@@ -348,9 +617,6 @@ async def create_lead(
             detail=f"Database write error: {exc}",
         )
 
-    # --- Step 6: Add to in-memory vector cache for future duplicate checks ---
-    _vector_cache.append({"id": new_id, "vector": vector})
-
     logger.info(
         "Lead '%s' saved — BU='%s', score=%d, duplicate=%s",
         new_id,
@@ -358,6 +624,30 @@ async def create_lead(
         ai_analysis.match_score,
         is_duplicate,
     )
+    telemetry.track_lead_ingested(is_duplicate, ai_analysis.top_match_bu, ai_analysis.match_score)
+
+    # --- Fire email notifications (background thread — non-blocking) ---
+    if is_duplicate:
+        notifications.send_duplicate_alert_email(
+            project_name=payload.project_name,
+            location=payload.location,
+            new_lead_id=new_id,
+            matched_lead_id=matched_lead_id,
+            similarity_score=dup_score,
+            ingested_by=current_user.email,
+        )
+    else:
+        notifications.send_new_lead_email(
+            project_name=payload.project_name,
+            location=payload.location,
+            value_rm=payload.value_rm,
+            top_match_bu=ai_analysis.top_match_bu,
+            match_score=ai_analysis.match_score,
+            rationale=ai_analysis.rationale,
+            synergy_bundle=list(ai_analysis.synergy_bundle),
+            ingested_by=current_user.email,
+            lead_id=new_id,
+        )
 
     # Pass the full payload dict so any extra top-level fields (developer, floors,
     # gfa, created_date) submitted by the client survive into the response.
@@ -374,7 +664,9 @@ async def create_lead(
     tags=["Leads"],
     summary="Bulk ingest leads from a CSV upload (BCI export format)",
 )
+@limiter.limit(LIMIT_BULK)
 async def bulk_ingest_leads(
+    request: Request,
     file: UploadFile = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> BulkIngestResponse:
@@ -382,7 +674,7 @@ async def bulk_ingest_leads(
     Accepts a CSV file (UTF-8 encoded) in the BCI export format.
     Runs the full AI pipeline for each valid row:
       1. Generate embedding → text-embedding-3-small
-      2. Duplicate check   → cosine similarity vs. cache
+      2. Duplicate check   → cosine similarity vs. Cosmos DB vectors
       3. AI BU analysis    → GPT-4o with tribal knowledge
       4. Persist           → Cosmos DB Leads container
 
@@ -462,7 +754,7 @@ async def bulk_ingest_leads(
             vector = await asyncio.to_thread(ai_engine.generate_embedding, embedding_input)
 
             new_id = str(uuid.uuid4())
-            is_dup = _check_duplicate(vector, new_id)
+            is_dup, _mid, _sc = _check_duplicate(vector, new_id)
 
             ai_result = await asyncio.to_thread(ai_engine.analyze_lead, lead_payload.model_dump())
             ai_analysis = AIAnalysis(
@@ -481,7 +773,7 @@ async def bulk_ingest_leads(
                 status="Under Review" if is_dup else "New",
             )
             await asyncio.to_thread(database.save_lead, lead_db.model_dump())
-            _vector_cache.append({"id": new_id, "vector": vector})
+            # Vectors are now read from Cosmos DB on each check — no cache append needed.
 
             imported += 1
             if is_dup:
@@ -499,20 +791,25 @@ async def bulk_ingest_leads(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/leads — Fetch All Leads for the Lead Workbench
+# GET /api/leads — Fetch Leads for the Lead Workbench (paginated)
 # ---------------------------------------------------------------------------
 @app.get(
     "/api/leads",
     response_model=List[LeadResponse],
     status_code=status.HTTP_200_OK,
     tags=["Leads"],
-    summary="Fetch all leads sorted by most recently ingested",
+    summary="Fetch leads sorted by most recently ingested (paginated)",
 )
+@limiter.limit(LIMIT_READ)
 async def get_leads(
+    request: Request,
+    response: Response,
+    skip: int = Query(default=0, ge=0, description="Number of records to skip (0-based offset)"),
+    limit: int = Query(default=100, ge=1, le=2000, description="Max records to return per page (1–2000)"),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> List[LeadResponse]:
     """
-    Returns leads from Cosmos DB, sorted newest-first.
+    Returns leads from Cosmos DB, sorted newest-first, with pagination.
     RBAC filtering:
       • Admin    → all leads returned.
       • Sales_Rep → only leads where top_match_bu matches the user's BU.
@@ -521,13 +818,28 @@ async def get_leads(
         List[LeadResponse] — enriched lead documents (vector excluded).
     """
     try:
-        raw_leads = await asyncio.to_thread(database.get_all_leads)
+        raw_leads = await asyncio.wait_for(
+            asyncio.to_thread(database.get_leads_page, skip, limit),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Database query timed out. Try a smaller limit or contact support.",
+        )
     except Exception as exc:
         logger.error("Failed to fetch leads from CosmosDB: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database read error: {exc}",
         )
+
+    # Attach total count header (best-effort; failure won’t break the response)
+    try:
+        total = await asyncio.to_thread(database.count_leads)
+        response.headers["X-Total-Count"] = str(total)
+    except Exception:
+        pass  # header is informational only
 
     results: List[LeadResponse] = []
     for doc in raw_leads:
@@ -546,6 +858,84 @@ async def get_leads(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/leads/export — Export all leads as CSV (no pagination cap)
+# ---------------------------------------------------------------------------
+@app.get(
+    "/api/leads/export",
+    tags=["Leads"],
+    summary="Download all leads as a CSV file",
+)
+@limiter.limit("10/minute")
+async def export_leads_csv(
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Returns all leads (respecting RBAC) as a UTF-8 CSV file attachment.
+    No pagination — intended for full-dataset export / reporting.
+    Filename: synergy-leads-YYYY-MM-DD.csv
+    """
+    try:
+        raw_leads = await asyncio.wait_for(
+            asyncio.to_thread(database.get_leads_page, 0, 10_000),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Export query timed out.")
+    except Exception as exc:
+        logger.error("Export leads failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Database error during export.")
+
+    # Build rows -----------------------------------------------
+    CSV_FIELDS = [
+        "id", "project_name", "location", "value_rm", "project_type", "stage",
+        "status", "developer", "floors", "gfa", "created_date", "assigned_to",
+        "is_duplicate", "top_match_bu", "match_score", "rationale",
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=CSV_FIELDS, extrasaction="ignore", lineterminator="\r\n")
+    writer.writeheader()
+
+    for doc in raw_leads:
+        try:
+            lead = LeadDB(**{k: v for k, v in doc.items() if not k.startswith("_")})
+            if current_user.role == "Sales_Rep" and current_user.bu:
+                top_bu = lead.ai_analysis.top_match_bu if lead.ai_analysis else ""
+                if current_user.bu.lower() not in top_bu.lower():
+                    continue
+            row = {
+                "id":            lead.id,
+                "project_name":  lead.project_name,
+                "location":      lead.location,
+                "value_rm":      lead.value_rm,
+                "project_type":  lead.project_type,
+                "stage":         lead.stage,
+                "status":        lead.status,
+                "developer":     lead.developer or "",
+                "floors":        lead.floors or "",
+                "gfa":           lead.gfa or "",
+                "created_date":  lead.created_date or "",
+                "assigned_to":   lead.assigned_to or "",
+                "is_duplicate":  lead.is_duplicate,
+                "top_match_bu":  lead.ai_analysis.top_match_bu if lead.ai_analysis else "",
+                "match_score":   lead.ai_analysis.match_score if lead.ai_analysis else "",
+                "rationale":     (lead.ai_analysis.rationale or "").replace("\n", " ") if lead.ai_analysis else "",
+            }
+            writer.writerow(row)
+        except Exception as exc:
+            logger.warning("Export: skipping malformed lead id='%s': %s", doc.get("id"), exc)
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # utf-8-sig = Excel-friendly BOM
+    today = __import__("datetime").date.today().isoformat()
+    filename = f"synergy-leads-{today}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/conflicts — Fetch Conflict Queue for Human Review
 # ---------------------------------------------------------------------------
 @app.get(
@@ -555,7 +945,9 @@ async def get_leads(
     tags=["Conflicts"],
     summary="Fetch all duplicate conflict pairs awaiting human review",
 )
+@limiter.limit(LIMIT_READ)
 def get_conflicts(
+    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> List[Dict[str, Any]]:
     """
@@ -617,7 +1009,9 @@ def get_conflicts(
     tags=["Conflicts"],
     summary="Resolve a conflict — Merge, Discard, or Keep Both",
 )
+@limiter.limit(LIMIT_PATCH)
 async def resolve_conflict(
+    request: Request,
     conflict_id: str,
     payload: ConflictResolutionUpdate,
     current_user: CurrentUser = Depends(get_current_user),
@@ -660,6 +1054,14 @@ async def resolve_conflict(
         payload.status,
         current_user.email,
     )
+    notifications.send_conflict_resolved_email(
+        conflict_id=conflict_id,
+        resolution=payload.status,
+        resolved_by_name=current_user.name,
+        resolved_by_email=current_user.email,
+        lead_id=updated.get("lead_id", conflict_id),
+        matched_lead_id=updated.get("matched_lead_id", ""),
+    )
     return {k: v for k, v in updated.items() if not k.startswith("_")}
 
 # ---------------------------------------------------------------------------
@@ -670,7 +1072,9 @@ async def resolve_conflict(
     tags=["Leads"],
     summary="Partially update a lead (stage, status)",
 )
+@limiter.limit(LIMIT_PATCH)
 async def patch_lead(
+    request: Request,
     lead_id: str,
     payload: LeadUpdate,
     current_user: CurrentUser = Depends(get_current_user),
@@ -744,6 +1148,20 @@ async def patch_lead(
 
     lead = LeadDB(**{k: v for k, v in target_doc.items() if not k.startswith("_")})
     logger.info("Lead '%s' updated — changes: %s", lead_id, update_data)
+
+    # Notify when a lead is explicitly assigned to a BU
+    if update_data.get("status") == "Assigned":
+        ai = target_doc.get("ai_analysis") or {}
+        notifications.send_lead_assigned_email(
+            project_name=target_doc.get("project_name", lead_id),
+            location=target_doc.get("location", ""),
+            value_rm=int(target_doc.get("value_rm", 0)),
+            lead_id=lead_id,
+            assigned_bu=ai.get("top_match_bu", "Unknown BU"),
+            assigned_by_name=current_user.name,
+            assigned_by_email=current_user.email,
+        )
+
     return LeadResponse.from_lead_db(lead, raw_doc=target_doc)
 
 
@@ -757,7 +1175,9 @@ async def patch_lead(
     tags=["Activities"],
     summary="Fetch the activity/notes timeline for a specific lead",
 )
+@limiter.limit(LIMIT_READ)
 def get_activities(
+    request: Request,
     lead_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> List[LeadActivity]:
@@ -787,7 +1207,9 @@ def get_activities(
     tags=["Activities"],
     summary="Log a new activity or note against a lead",
 )
+@limiter.limit(LIMIT_PATCH)
 def create_activity(
+    request: Request,
     lead_id: str,
     payload: LeadActivityCreate,
     current_user: CurrentUser = Depends(get_current_user),
@@ -830,7 +1252,9 @@ def create_activity(
     tags=["Audit"],
     summary="Fetch the immutable change history for a specific lead",
 )
+@limiter.limit(LIMIT_READ)
 def get_audit_logs(
+    request: Request,
     lead_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> List[AuditLog]:
