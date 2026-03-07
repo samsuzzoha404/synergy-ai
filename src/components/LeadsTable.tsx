@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Search, Filter, SlidersHorizontal, ChevronDown, ArrowUpDown, X } from "lucide-react";
-import { leads as mockLeads, Lead, LeadStatus, LeadStage } from "@/data/mockData";
+import { Lead, LeadStatus, LeadStage } from "@/data/mockData";
 import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { SmartDrawer } from "@/components/SmartDrawer";
 import { Input } from "@/components/ui/input";
@@ -25,8 +25,8 @@ interface LeadsTableProps {
 }
 
 export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: LeadsTableProps) {
-  // Use injected leads prop if provided; fall back to static mock data.
-  const leads = propLeads ?? mockLeads;
+  // Use injected leads prop if provided; empty array when no data yet.
+  const leads = propLeads ?? [];
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>(externalFilter || "");

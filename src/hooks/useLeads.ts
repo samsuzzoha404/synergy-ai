@@ -4,21 +4,20 @@
  * Provides React hooks that encapsulate all data-fetching logic.
  * Components stay clean — they call a hook and get data + loading/error states.
  *
- * Hybrid Data Strategy:
- *   useLeads() merges static mockLeads (always visible, great demo UX) with any
- *   real leads returned by the backend. If the backend is unavailable, it falls
- *   back to mock data gracefully so the UI never breaks.
+ * 100% Real Database Strategy:
+ *   All data is fetched exclusively from the FastAPI/Cosmos DB backend.
+ *   Mock data has been migrated to Cosmos DB via seed_master.py.
+ *   RBAC filtering is handled server-side based on the JWT token.
  *
  * Hooks exported:
- *   useLeads()        — fetch all leads (GET /api/leads), merged with mockData
+ *   useLeads()        — fetch all leads (GET /api/leads)
  *   useCreateLead()   — create a new lead (POST /api/leads)
  *   useConflicts()    — fetch conflict queue (GET /api/conflicts)
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient, type AuditLog, type BulkIngestResponse, type Conflict, type ConflictResolvePayload, type Lead as APILead, type LeadActivity, type LeadActivityCreate, type LeadCreate, type LeadUpdate } from '@/lib/api';
-import { leads as mockLeads, mockConflicts, type Lead } from '@/data/mockData';
-import { useAuth } from '@/context/AuthContext';
+import { type Lead } from '@/data/mockData';
 import { toast } from '@/hooks/use-toast';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +55,16 @@ function mapApiStatus(status: string): Lead['status'] {
   return statusMap[status] ?? 'New';
 }
 
+/** Map BU names to distinct chart colours for the SmartDrawer match badges. */
+const BU_COLORS: Record<string, string> = {
+  'Synergy Precast Concrete': 'hsl(217, 91%, 50%)',
+  'Synergy Formwork & Scaffolding': 'hsl(142, 71%, 45%)',
+  'Ajiya Metal / Glass': 'hsl(32, 95%, 50%)',
+  'YTL Cement': 'hsl(280, 70%, 55%)',
+  'Pan Malaysia Pools': 'hsl(0, 72%, 51%)',
+};
+const DEFAULT_BU_COLOR = 'hsl(217, 91%, 50%)';
+
 function adaptAPILead(apiLead: APILead): Lead {
   const analysis = apiLead.ai_analysis;
   return {
@@ -67,10 +76,14 @@ function adaptAPILead(apiLead: APILead): Lead {
     type: (apiLead.project_type as Lead['type']) ?? 'Commercial',
     status: mapApiStatus(apiLead.status),
     isDuplicate: apiLead.is_duplicate,
-    developer: 'New Lead (via API)',
-    createdDate: new Date().toISOString().split('T')[0],
+    developer: apiLead.developer ?? 'Unknown Developer',
+    createdDate: apiLead.created_date ?? new Date().toISOString().split('T')[0],
     matches: analysis
-      ? [{ bu: analysis.top_match_bu, score: analysis.match_score, color: 'hsl(217, 91%, 50%)' }]
+      ? [{
+          bu: analysis.top_match_bu,
+          score: analysis.match_score,
+          color: BU_COLORS[analysis.top_match_bu] ?? DEFAULT_BU_COLOR,
+        }]
       : [],
     crossSell: analysis?.synergy_bundle.map((bu) => ({ product: bu, bu })) ?? [],
     aiRationale: analysis?.rationale ?? 'AI analysis pending.',
@@ -82,42 +95,23 @@ function adaptAPILead(apiLead: APILead): Lead {
 // ===========================================================================
 
 /**
- * Returns a merged array of mock leads (static, always shown) and any real
- * leads returned by the backend (GET /api/leads).
- *
- * Falls back to mockLeads only if the backend is unreachable, so the UI is
- * never blank — perfect for a hackathon demo.
+ * Returns all leads from the backend (GET /api/leads).
+ * RBAC filtering (Admin vs Sales_Rep BU) is applied server-side via the JWT.
  *
  * @example
- *   const { data: leads = mockLeads, isLoading } = useLeads();
+ *   const { data: leads = [], isLoading } = useLeads();
  */
 export function useLeads() {
-  const { user } = useAuth();
-
-  // RBAC: Admin sees all mock leads; Sales_Rep only sees leads for their BU (exact match).
-  const filteredMock = user?.role === 'Admin'
-    ? mockLeads
-    : mockLeads.filter((lead) => lead.top_match_bu === (user?.bu ?? ''));
-
   return useQuery<Lead[], Error>({
-    queryKey: [...QUERY_KEYS.leads, user?.role ?? 'guest', user?.bu ?? ''],
+    queryKey: QUERY_KEYS.leads,
 
     queryFn: async (): Promise<Lead[]> => {
-      try {
-        const response = await apiClient.get<APILead[]>('/api/leads');
-        const apiLeads: Lead[] = response.data.map(adaptAPILead);
-        return [...filteredMock, ...apiLeads];
-      } catch {
-        return [...filteredMock];
-      }
+      const response = await apiClient.get<APILead[]>('/api/leads');
+      return response.data.map(adaptAPILead);
     },
 
     refetchInterval: 60_000,
     staleTime: 30_000,
-    // Bug #4 fix: use the function form so a new array reference is NOT created
-    // on every render. TanStack Query calls this only when placeholder data is
-    // actually needed, avoiding the structural-sharing overhead of an eager spread.
-    placeholderData: () => [...filteredMock],
   });
 }
 
@@ -175,36 +169,16 @@ export function useCreateLead(options?: {
  *   const { data: conflicts = [], isLoading } = useConflicts();
  */
 export function useConflicts() {
-  const { user } = useAuth();
-
-  // RBAC: Admin sees all mock conflicts; Sales_Rep only sees conflicts for their BU (exact match).
-  const filteredMock = (user?.role === 'Admin'
-    ? mockConflicts
-    : mockConflicts.filter((c) => c.top_match_bu === (user?.bu ?? ''))
-  ).map(({ top_match_bu: _omit, ...rest }) => rest as Conflict);
-
   return useQuery<Conflict[], Error>({
-    queryKey: [...QUERY_KEYS.conflicts, user?.role ?? 'guest', user?.bu ?? ''],
+    queryKey: QUERY_KEYS.conflicts,
 
     queryFn: async (): Promise<Conflict[]> => {
-      try {
-        const response = await apiClient.get<Conflict[]>('/api/conflicts');
-        const apiConflicts = response.data;
-        const realPairs = new Set(
-          apiConflicts.map((c) => `${c.lead_id}::${c.matched_lead_id}`),
-        );
-        const dedupedMock = filteredMock.filter(
-          (c) => !realPairs.has(`${c.lead_id}::${c.matched_lead_id}`),
-        );
-        return [...dedupedMock, ...apiConflicts];
-      } catch {
-        return [...filteredMock];
-      }
+      const response = await apiClient.get<Conflict[]>('/api/conflicts');
+      return response.data;
     },
 
     refetchInterval: 120_000,
     staleTime: 60_000,
-    placeholderData: [...filteredMock],
   });
 }
 
@@ -225,35 +199,11 @@ export function useUpdateLeadStage() {
 
   return useMutation<APILead | null, Error, { leadId: string; update: LeadUpdate }>({
     mutationFn: async ({ leadId, update }) => {
-      // Mock leads (IDs starting with "L00") don't exist in Cosmos DB — skip the PATCH.
-      if (leadId.startsWith('L00')) return null;
       const response = await apiClient.patch<APILead>(`/api/leads/${leadId}`, update);
       return response.data;
     },
-    onSuccess: (_data, { leadId, update }) => {
-      if (leadId.startsWith('L00')) {
-        // Update every cached 'leads' query variant in place so all views stay in sync.
-        // Bug #6 fix: QUERY_KEYS.leads is ['leads'], which TanStack Query v5
-        // matches as a prefix against the actual key ['leads', role, bu].
-        // This is intentional — all role/bu cache variants are updated at once.
-        // If exact matching is ever required, pass { exact: false } explicitly
-        // or enumerate every variant key here.
-        queryClient.setQueriesData<Lead[]>(
-          { queryKey: QUERY_KEYS.leads },
-          (old) =>
-            old?.map((l) =>
-              l.id === leadId && update.stage
-                ? { ...l, stage: update.stage as Lead['stage'] }
-                : l,
-            ) ?? old,
-        );
-        toast({
-          title: 'Demo Mode',
-          description: 'Mock lead stage updated locally.',
-        });
-        return;
-      }
-      // Real lead — invalidate so all views (workbench + dashboard) refresh from the server.
+    onSuccess: (_data, { leadId }) => {
+      // Invalidate so all views (workbench + dashboard) refresh from the server.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.leads });
       // Invalidate this lead's audit log so the SmartDrawer history tab updates instantly.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.auditLogs(leadId) });

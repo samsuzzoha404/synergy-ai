@@ -11,7 +11,7 @@ import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { Lead } from "@/data/mockData";
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
-import { useLeadActivities, useCreateActivity, useAuditLogs } from "@/hooks/useLeads";
+import { useLeadActivities, useCreateActivity, useAuditLogs, useUpdateLeadStage } from "@/hooks/useLeads";
 import type { AuditLog, LeadActivity } from "@/lib/api";
 
 interface SmartDrawerProps {
@@ -50,18 +50,28 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
     return 30 + (seed % 30);
   }, [lead?.id]);
 
-  const handleApprove = () => {
+  const { mutateAsync: updateLead } = useUpdateLeadStage();
+
+  const handleApprove = async () => {
     if (!lead) return;
     setAssigning(true);
-    setTimeout(() => {
-      setAssigning(false);
+    try {
+      await updateLead({ leadId: lead.id, update: { status: 'Assigned' } });
       toast({
-        title: "✅ Lead Assigned Successfully",
+        title: '✅ Lead Assigned Successfully',
         description: `${lead.projectName} assigned to ${lead.matches[0]?.bu}. SMS + email sent to Sales Manager.`,
         duration: 5000,
       });
       onClose();
-    }, 1500);
+    } catch {
+      toast({
+        title: 'Assignment failed',
+        description: 'Could not update lead status. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setAssigning(false);
+    }
   };
 
   const topBU = lead?.matches[0]?.bu;

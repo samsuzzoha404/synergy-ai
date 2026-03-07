@@ -24,6 +24,7 @@ import React, {
   useMemo,
   useState,
 } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 // ---------------------------------------------------------------------------
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [token, setToken] = useState<string | null>(() =>
     localStorage.getItem(STORAGE_TOKEN_KEY),
   );
@@ -125,6 +127,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const login = useCallback(async (payload: LoginPayload): Promise<void> => {
+    // Clear any previous user's cached data BEFORE setting the new token so
+    // the incoming queries always run with the correct JWT + RBAC role.
+    queryClient.clear();
     // Call the real backend — all 8 demo accounts are seeded in Cosmos DB Users container
     // so /api/auth/login returns a valid JWT for every predefined account.
     const response = await apiClient.post<LoginResponse>(
@@ -136,14 +141,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(userProfile);
     localStorage.setItem(STORAGE_TOKEN_KEY, access_token);
     localStorage.setItem(STORAGE_USER_KEY, JSON.stringify(userProfile));
-  }, []);
+  }, [queryClient]);
 
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
     localStorage.removeItem(STORAGE_TOKEN_KEY);
     localStorage.removeItem(STORAGE_USER_KEY);
-  }, []);
+    // Wipe the entire React Query cache so no previous user's data
+    // (leads, conflicts, audit logs) leaks into the next login session.
+    queryClient.clear();
+  }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

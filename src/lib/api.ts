@@ -49,6 +49,12 @@ export interface Lead {
   status: string;
   is_duplicate: boolean;
   ai_analysis: AIAnalysis | null;
+  // Extra metadata fields — populated for seeded / bulk-imported leads
+  developer?: string | null;
+  floors?: number | null;
+  gfa?: number | null;
+  created_date?: string | null;
+  assigned_to?: string | null;
 }
 
 /** Conflict document returned by GET /api/conflicts. */

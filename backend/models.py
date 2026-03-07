@@ -282,6 +282,8 @@ class LeadResponse(BaseModel):
     """
     Lightweight response envelope. The 'vector' field is excluded from
     API responses to keep payloads lean (vectors can be 1536 floats).
+    Extra metadata fields (developer, floors, gfa, created_date, assigned_to)
+    are passed through so the frontend SmartDrawer can display rich detail.
     """
 
     id: str
@@ -293,10 +295,22 @@ class LeadResponse(BaseModel):
     status: str
     is_duplicate: bool
     ai_analysis: Optional[AIAnalysis] = None
+    # Extra metadata — populated by seed_master.py and bulk imports
+    developer: Optional[str] = None
+    floors: Optional[int] = None
+    gfa: Optional[int] = None
+    created_date: Optional[str] = None
+    assigned_to: Optional[str] = None
 
     @classmethod
-    def from_lead_db(cls, lead: LeadDB) -> "LeadResponse":
-        """Factory to strip internal fields (vector) before API serialisation."""
+    def from_lead_db(cls, lead: "LeadDB", raw_doc: Optional[dict] = None) -> "LeadResponse":
+        """
+        Factory to strip internal fields (vector) before API serialisation.
+        Accepts an optional raw_doc dict so extra Cosmos DB fields (developer,
+        floors, gfa, created_date, assigned_to) can be passed through transparently
+        without requiring them to be formal Pydantic fields on LeadDB.
+        """
+        extra = raw_doc or {}
         return cls(
             id=lead.id,
             project_name=lead.project_name,
@@ -307,6 +321,11 @@ class LeadResponse(BaseModel):
             status=lead.status,
             is_duplicate=lead.is_duplicate,
             ai_analysis=lead.ai_analysis,
+            developer=extra.get("developer"),
+            floors=extra.get("floors"),
+            gfa=extra.get("gfa"),
+            created_date=extra.get("created_date"),
+            assigned_to=extra.get("assigned_to"),
         )
 
 

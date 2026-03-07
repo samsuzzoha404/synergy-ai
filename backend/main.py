@@ -359,7 +359,9 @@ async def create_lead(
         is_duplicate,
     )
 
-    return LeadResponse.from_lead_db(lead_db)
+    # Pass the full payload dict so any extra top-level fields (developer, floors,
+    # gfa, created_date) submitted by the client survive into the response.
+    return LeadResponse.from_lead_db(lead_db, raw_doc=lead_db.model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +538,7 @@ async def get_leads(
                 top_bu = lead.ai_analysis.top_match_bu if lead.ai_analysis else ""
                 if current_user.bu.lower() not in top_bu.lower():
                     continue
-            results.append(LeadResponse.from_lead_db(lead))
+            results.append(LeadResponse.from_lead_db(lead, raw_doc=doc))
         except Exception as parse_exc:
             logger.warning("Skipping malformed lead doc id='%s': %s", doc.get("id"), parse_exc)
 
@@ -742,7 +744,7 @@ async def patch_lead(
 
     lead = LeadDB(**{k: v for k, v in target_doc.items() if not k.startswith("_")})
     logger.info("Lead '%s' updated — changes: %s", lead_id, update_data)
-    return LeadResponse.from_lead_db(lead)
+    return LeadResponse.from_lead_db(lead, raw_doc=target_doc)
 
 
 # ---------------------------------------------------------------------------
