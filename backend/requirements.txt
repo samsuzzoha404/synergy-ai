@@ -49,3 +49,5 @@ pdfplumber==0.11.4             # Extract text and tables from uploaded PDF files
 # exception telemetry, log correlation, and live metrics streamed to App Insights.
 # No-op when APPLICATIONINSIGHTS_CONNECTION_STRING env var is absent (local dev).
 azure-monitor-opentelemetry==1.6.4
+
+# Last deploy trigger: 2026-03-08
