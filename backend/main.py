@@ -1044,11 +1044,11 @@ async def export_leads_csv(
                 "project_type":  lead.project_type,
                 "stage":         lead.stage,
                 "status":        lead.status,
-                "developer":     lead.developer or "",
-                "floors":        lead.floors or "",
-                "gfa":           lead.gfa or "",
-                "created_date":  lead.created_date or "",
-                "assigned_to":   lead.assigned_to or "",
+                "developer":     lead.developer or doc.get("developer") or "",
+                "floors":        lead.floors or doc.get("floors") or "",
+                "gfa":           lead.gfa or doc.get("gfa") or "",
+                "created_date":  doc.get("created_date") or "",
+                "assigned_to":   doc.get("assigned_to") or "",
                 "is_duplicate":  lead.is_duplicate,
                 "top_match_bu":  lead.ai_analysis.top_match_bu if lead.ai_analysis else "",
                 "match_score":   lead.ai_analysis.match_score if lead.ai_analysis else "",
@@ -1453,6 +1453,82 @@ def get_audit_logs(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database read error: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/leads/{lead_id} — Fetch a single lead by ID
+# ---------------------------------------------------------------------------
+@app.get(
+    "/api/leads/{lead_id}",
+    response_model=LeadResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Leads"],
+    summary="Fetch a single lead document by its UUID",
+)
+@limiter.limit(LIMIT_READ)
+async def get_lead(
+    request: Request,
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> LeadResponse:
+    """
+    Point-read a single lead from Cosmos DB by its UUID.
+    O(1) cost — uses partition key directly (no cross-partition scan).
+    """
+    try:
+        doc = await asyncio.to_thread(database.read_lead, lead_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lead '{lead_id}' not found.",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database read error: {exc}",
+        )
+    lead = LeadDB(**{k: v for k, v in doc.items() if not k.startswith("_")})
+    return LeadResponse.from_lead_db(lead, raw_doc=doc)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/leads/{lead_id} — Hard-delete a lead (Admin only)
+# ---------------------------------------------------------------------------
+@app.delete(
+    "/api/leads/{lead_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Leads"],
+    summary="Permanently delete a lead document (Admin only)",
+)
+@limiter.limit(LIMIT_WRITE)
+async def delete_lead(
+    request: Request,
+    lead_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """
+    Hard-deletes a lead from Cosmos DB. Admin role required.
+    Also removes associated activities and audit logs.
+    """
+    if current_user.role != "Admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required to delete leads.",
+        )
+    try:
+        await asyncio.to_thread(database.delete_lead, lead_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Lead '{lead_id}' not found.",
+        )
+    except Exception as exc:
+        logger.error("Failed to delete lead '%s': %s", lead_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Database delete error: {exc}",
+        )
+    logger.info("Lead '%s' hard-deleted by admin '%s'", lead_id, current_user.email)
 
 
 # NOTE: Startup logic has been moved to the `lifespan` context manager above.

@@ -15,6 +15,11 @@ pydantic-settings==2.6.1
 # --- Azure OpenAI SDK (new unified client) ---
 openai==1.57.0
 
+# --- LangChain / LangGraph — Agentic AI Workflow ---
+langchain-openai==0.3.9        # AzureChatOpenAI + AzureOpenAIEmbeddings wrappers
+langchain-core==0.3.51         # Required base library for langchain-openai
+langgraph==0.3.21              # StateGraph, conditional edges, compiled workflow
+
 # --- Azure Cosmos DB SDK ---
 azure-cosmos==4.9.0
 

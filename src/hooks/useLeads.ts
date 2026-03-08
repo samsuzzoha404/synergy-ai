@@ -70,15 +70,16 @@ function mapApiStatus(status: string): Lead['status'] {
 /** Map BU names to distinct chart colours for the SmartDrawer match badges.
  * Keys must match the exact strings returned by the AI engine (as seen in
  * ai_analysis.top_match_bu). Verified against live DB output 2026-03-08.
+ * GPT-4o returns all-uppercase BU names as defined in the system prompt.
  */
 const BU_COLORS: Record<string, string> = {
-  'Stucken AAC':            'hsl(217, 91%, 50%)',  // blue
+  'STUCKEN AAC':            'hsl(217, 91%, 50%)',  // blue
   'AJIYA METAL / GLASS':    'hsl(32,  95%, 50%)',  // amber
   'SIGNATURE ALLIANCE':     'hsl(280, 70%, 55%)',  // violet
   'SIGNATURE KITCHEN':      'hsl(320, 75%, 55%)',  // pink
   'G-CAST':                 'hsl(142, 71%, 45%)',  // green
   'PPG HING':               'hsl(0,   72%, 51%)',  // red
-  'Fiamma Holding':         'hsl(24,  95%, 50%)',  // orange
+  'FIAMMA HOLDING':         'hsl(24,  95%, 50%)',  // orange
 };
 const DEFAULT_BU_COLOR = 'hsl(217, 91%, 50%)';
 

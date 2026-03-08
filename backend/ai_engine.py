@@ -1,34 +1,48 @@
 """
-ai_engine.py — The AI Brain of Synergy Sales Genius
-=====================================================
-Two core functions power the intelligence layer:
+ai_engine.py — Agentic Workflow Engine for Synergy Sales Genius
+===============================================================
+Implements a LangGraph state machine that drives intelligent lead processing.
 
-  1. generate_embedding(text)
-       Calls Azure OpenAI text-embedding-3-small to convert a lead's
-       (project_name + location) into a 1536-dimensional float vector.
-       This vector is stored in CosmosDB for semantic duplicate detection.
+Graph topology (LeadProcessingState):
 
-  2. analyze_lead(lead_dict)
-       Calls Azure OpenAI GPT-4o with a structured system prompt encoding
-       Chin Hin Group's tribal knowledge. Returns a JSON object with:
-         - top_match_bu   : best Business Unit for this lead
-         - match_score    : 0–100 confidence
-         - rationale      : explanation citing past similar projects
-         - synergy_bundle : other BUs to cross-sell
+    START
+      │
+      ▼
+  generate_embedding_node   — AzureOpenAIEmbeddings (text-embedding-3-small)
+      │
+      ▼
+  check_duplicate_node      — NumPy cosine similarity vs. Cosmos DB vectors
+      │
+      ├─ is_duplicate=True  ──► END   (skips GPT-4o to conserve tokens)
+      │
+      └─ is_duplicate=False ──► score_lead_node
+                                     │
+                                     ▼
+                                    END
 
-Design principles:
-  • Uses the new openai Python SDK AzureOpenAI client (v1.x+).
-  • response_format={"type": "json_object"} ensures deterministic JSON output.
-  • All errors are caught and re-raised with context for FastAPI error handlers.
+Public API — signatures are IDENTICAL to the previous version so main.py
+requires zero changes:
+
+    generate_embedding(text: str)           → List[float]
+    analyze_lead(lead_dict: Dict)           → {"top_match_bu", "match_score",
+                                               "rationale", "synergy_bundle"}
+    extract_leads_from_pdf_text(pdf_text)   → List[Dict]
 """
 
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from openai import AzureOpenAI
+import numpy as np
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
+
+from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
+from langgraph.graph import END, START, StateGraph
+
+import database
 
 # ---------------------------------------------------------------------------
 # Initialise environment & logging
@@ -38,25 +52,42 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Azure OpenAI Client — Singleton, reused for all AI calls.
-# The client automatically handles retries and connection pooling.
+# Configuration — read deployment names from environment
 # ---------------------------------------------------------------------------
-_openai_client = AzureOpenAI(
-    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-    api_key=os.environ["AZURE_OPENAI_API_KEY"],
-    api_version=os.environ["AZURE_OPENAI_API_VERSION"],
-)
-
-# Deployment names from .env
 GPT4O_DEPLOYMENT: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
 EMBEDDING_DEPLOYMENT: str = os.environ.get(
     "AZURE_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small"
 )
 EMBEDDING_API_VERSION: str = os.environ.get("AZURE_EMBEDDING_API_VERSION", "2023-05-15")
 
-# Singleton embedding client — uses the embedding-specific API version.
-# Created once at module load (BUG-B5: avoids a new TCP handshake per request).
-_embedding_client = AzureOpenAI(
+DUPLICATE_SIMILARITY_THRESHOLD: float = 0.92
+
+# ---------------------------------------------------------------------------
+# LangChain Azure Model Singletons
+# One instance for BU scoring (low temperature, tight token budget),
+# one for PDF extraction (higher max_tokens, JSON-mode enforced).
+# ---------------------------------------------------------------------------
+_llm = AzureChatOpenAI(
+    azure_deployment=GPT4O_DEPLOYMENT,
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    api_version=os.environ["AZURE_OPENAI_API_VERSION"],
+    temperature=0.2,
+    max_tokens=512,
+)
+
+_llm_pdf = AzureChatOpenAI(
+    azure_deployment=GPT4O_DEPLOYMENT,
+    azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    api_version=os.environ["AZURE_OPENAI_API_VERSION"],
+    temperature=0.1,
+    max_tokens=4096,
+    model_kwargs={"response_format": {"type": "json_object"}},
+)
+
+_embeddings = AzureOpenAIEmbeddings(
+    azure_deployment=EMBEDDING_DEPLOYMENT,
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
     api_key=os.environ["AZURE_OPENAI_API_KEY"],
     api_version=EMBEDDING_API_VERSION,
@@ -127,7 +158,211 @@ Below 50: Low confidence; flag for manual review.
 """
 
 # ---------------------------------------------------------------------------
-# Public API
+# Pydantic Schema — enforces structured output from GPT-4o
+# ---------------------------------------------------------------------------
+class AIAnalysisResult(BaseModel):
+    """Validated structured output for GPT-4o BU scoring."""
+
+    top_match_bu: str = Field(
+        description="Exact Business Unit name from the 7 BUs defined in the system prompt."
+    )
+    match_score: int = Field(
+        description="Confidence score from 0 to 100."
+    )
+    rationale: str = Field(
+        description=(
+            "2-3 sentence explanation citing tribal knowledge, past similar "
+            "projects, and signals present in the lead."
+        )
+    )
+    synergy_bundle: List[str] = Field(
+        description="1-3 other BU names to cross-sell; may be an empty list."
+    )
+
+
+# ---------------------------------------------------------------------------
+# LangGraph State
+# ---------------------------------------------------------------------------
+class LeadProcessingState(TypedDict):
+    """Shared mutable state passed between every node in the lead workflow graph."""
+
+    raw_lead_dict: dict               # Original lead payload from main.py
+    vector: List[float]               # 1536-dim semantic embedding
+    is_duplicate: bool                # True when cosine similarity >= threshold
+    ai_analysis: Optional[dict]       # Populated by score_lead_node; None if duplicate
+
+
+# ---------------------------------------------------------------------------
+# Graph Node 1: generate_embedding_node
+# ---------------------------------------------------------------------------
+def generate_embedding_node(state: LeadProcessingState) -> dict:
+    """
+    Combine project_name + location from the lead dict and generate the
+    1536-dimensional semantic embedding via AzureOpenAIEmbeddings.
+
+    Returns:
+        {"vector": List[float]}
+    """
+    lead = state["raw_lead_dict"]
+    text = f"{lead.get('project_name', '')} {lead.get('location', '')}".strip()
+    logger.info("Graph node [embed]: generating embedding for '%s'", text[:80])
+
+    vector: List[float] = _embeddings.embed_query(text)
+    logger.info("Graph node [embed]: vector generated — dimensions=%d", len(vector))
+    return {"vector": vector}
+
+
+# ---------------------------------------------------------------------------
+# Graph Node 2: check_duplicate_node
+# ---------------------------------------------------------------------------
+def check_duplicate_node(state: LeadProcessingState) -> dict:
+    """
+    Compare the state vector against every active lead vector in Cosmos DB
+    using NumPy cosine similarity.
+
+    Routes to END (skipping GPT-4o) when similarity >= DUPLICATE_SIMILARITY_THRESHOLD.
+
+    Returns:
+        {"is_duplicate": bool}
+    """
+    new_vec = np.array(state["vector"], dtype=np.float32)
+    norm_a = np.linalg.norm(new_vec)
+
+    if norm_a == 0:
+        logger.warning("Graph node [dup-check]: zero-norm vector; skipping duplicate check.")
+        return {"is_duplicate": False}
+
+    try:
+        existing_vectors = database.get_all_lead_vectors()
+    except Exception as exc:
+        logger.error(
+            "Graph node [dup-check]: DB query failed — skipping check: %s", exc
+        )
+        return {"is_duplicate": False}
+
+    for cached in existing_vectors:
+        old_vec = np.array(cached["vector"], dtype=np.float32)
+        norm_b = np.linalg.norm(old_vec)
+        if norm_b == 0:
+            continue
+        similarity = float(np.dot(new_vec, old_vec) / (norm_a * norm_b))
+        if similarity >= DUPLICATE_SIMILARITY_THRESHOLD:
+            logger.warning(
+                "Graph node [dup-check]: duplicate detected — "
+                "matched_id='%s', similarity=%.4f",
+                cached.get("id"),
+                similarity,
+            )
+            return {"is_duplicate": True}
+
+    logger.info("Graph node [dup-check]: no duplicate found.")
+    return {"is_duplicate": False}
+
+
+# ---------------------------------------------------------------------------
+# Graph Node 3: score_lead_node
+# ---------------------------------------------------------------------------
+def score_lead_node(state: LeadProcessingState) -> dict:
+    """
+    Send the lead to GPT-4o with the Chin Hin tribal knowledge system prompt.
+    Uses LangChain's .with_structured_output(AIAnalysisResult) to enforce
+    the required JSON schema via function-calling.
+
+    Returns:
+        {"ai_analysis": dict}  — a model_dump() of AIAnalysisResult
+    """
+    lead = state["raw_lead_dict"]
+
+    # Format value_rm safely regardless of whether it arrives as int, float, or str
+    try:
+        value_rm_str = f"{float(lead.get('value_rm', 0)):,.0f}"
+    except (ValueError, TypeError):
+        value_rm_str = str(lead.get("value_rm", 0))
+
+    user_prompt = (
+        "Analyse this inbound construction lead and return the optimal BU routing:\n\n"
+        f"PROJECT NAME  : {lead.get('project_name', 'N/A')}\n"
+        f"LOCATION      : {lead.get('location', 'N/A')}\n"
+        f"PROJECT TYPE  : {lead.get('project_type', 'N/A')}\n"
+        f"STAGE         : {lead.get('stage', 'N/A')}\n"
+        f"VALUE (RM)    : {value_rm_str}\n\n"
+        "Based on Chin Hin Group tribal knowledge and the BU profiles in your system prompt,\n"
+        "provide the optimal BU assignment with match score, rationale, and synergy bundle."
+    )
+
+    logger.info(
+        "Graph node [score]: calling GPT-4o for project='%s'",
+        lead.get("project_name"),
+    )
+
+    structured_llm = _llm.with_structured_output(AIAnalysisResult)
+    result: AIAnalysisResult = structured_llm.invoke(
+        [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+    )
+
+    logger.info(
+        "Graph node [score]: analysis complete — BU='%s', score=%d",
+        result.top_match_bu,
+        result.match_score,
+    )
+    return {"ai_analysis": result.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Conditional Routing Function
+# ---------------------------------------------------------------------------
+def _route_after_duplicate_check(state: LeadProcessingState) -> str:
+    """
+    After check_duplicate_node, decide the next node:
+      - Duplicate detected  → END  (conserves GPT-4o tokens)
+      - Not a duplicate     → score_lead_node
+    """
+    if state["is_duplicate"]:
+        logger.info("Graph routing: duplicate → END (GPT-4o skipped).")
+        return END
+    return "score_lead_node"
+
+
+# ---------------------------------------------------------------------------
+# Build & Compile the LangGraph State Machine
+# ---------------------------------------------------------------------------
+_graph_builder = StateGraph(LeadProcessingState)
+
+_graph_builder.add_node("generate_embedding_node", generate_embedding_node)
+_graph_builder.add_node("check_duplicate_node", check_duplicate_node)
+_graph_builder.add_node("score_lead_node", score_lead_node)
+
+_graph_builder.add_edge(START, "generate_embedding_node")
+_graph_builder.add_edge("generate_embedding_node", "check_duplicate_node")
+_graph_builder.add_conditional_edges(
+    "check_duplicate_node",
+    _route_after_duplicate_check,
+)
+_graph_builder.add_edge("score_lead_node", END)
+
+# Compiled, immutable workflow — reused for every analyze_lead() call.
+lead_workflow = _graph_builder.compile()
+
+# Placeholder returned when the graph short-circuits on a duplicate.
+# main.py always requires a valid dict from analyze_lead(); this satisfies
+# the contract while clearly signalling that no GPT-4o scoring was done.
+_DUPLICATE_PLACEHOLDER: Dict[str, Any] = {
+    "top_match_bu": "Pending Review",
+    "match_score": 0,
+    "rationale": (
+        "This lead was flagged as a near-duplicate of an existing project by "
+        "the semantic similarity engine. GPT-4o scoring was intentionally skipped "
+        "to conserve tokens. Please resolve the conflict in the Conflict Resolution workspace."
+    ),
+    "synergy_bundle": [],
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API — identical signatures to the previous ai_engine.py
 # ---------------------------------------------------------------------------
 
 def generate_embedding(text: str) -> List[float]:
@@ -146,17 +381,11 @@ def generate_embedding(text: str) -> List[float]:
         A list of 1536 floats representing the semantic embedding.
 
     Raises:
-        openai.OpenAIError: On API failure (network, quota, auth).
+        langchain_core.exceptions.LangChainException: On API failure.
     """
-    # Reuse the module-level singleton (BUG-B5 fix: no new TCP handshake per call).
     logger.info("Generating embedding for text: '%s'", text[:80])
-
     try:
-        response = _embedding_client.embeddings.create(
-            model=EMBEDDING_DEPLOYMENT,
-            input=text.strip(),
-        )
-        vector: List[float] = response.data[0].embedding
+        vector: List[float] = _embeddings.embed_query(text.strip())
         logger.info("Embedding generated — dimensions: %d", len(vector))
         return vector
     except Exception as exc:
@@ -166,84 +395,69 @@ def generate_embedding(text: str) -> List[float]:
 
 def analyze_lead(lead_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Analyse a lead using GPT-4o and Chin Hin tribal knowledge.
+    Process a lead through the compiled LangGraph agentic workflow.
 
-    Constructs a rich user prompt from the lead payload and calls GPT-4o
-    with JSON-mode enforced. Parses and validates the structured response.
+    Internally executes three sequential / conditional nodes:
+      1. generate_embedding_node  — embed the lead's project_name + location
+      2. check_duplicate_node     — cosine similarity check vs. Cosmos DB
+      3. score_lead_node          — GPT-4o BU scoring (skipped for duplicates)
 
-    Args:
-        lead_dict: A dict with at minimum: project_name, location,
-                   value_rm, project_type, stage.
-
-    Returns:
-        A dict matching the AIAnalysis schema:
+    This function always returns the exact dict structure expected by main.py:
         {
-            "top_match_bu": str,
-            "match_score": int,
-            "rationale": str,
-            "synergy_bundle": List[str]
+            "top_match_bu"  : str,
+            "match_score"   : int,
+            "rationale"     : str,
+            "synergy_bundle": List[str],
         }
 
+    When the graph detects a duplicate and skips the scoring node, a
+    descriptive placeholder dict is returned so the caller never receives None.
+
+    Args:
+        lead_dict: Lead payload dict (at minimum: project_name, location,
+                   value_rm, project_type, stage).
+
+    Returns:
+        Dict matching the AIAnalysis schema used by main.py.
+
     Raises:
-        ValueError: If GPT-4o returns malformed JSON.
-        openai.OpenAIError: On API failure.
+        Exception: Propagates any unexpected graph-level failure.
     """
-    # Build a structured user prompt with all available lead signals.
-    user_prompt = f"""
-Analyse this inbound construction lead and return the optimal BU routing:
-
-PROJECT NAME  : {lead_dict.get('project_name', 'N/A')}
-LOCATION      : {lead_dict.get('location', 'N/A')}
-PROJECT TYPE  : {lead_dict.get('project_type', 'N/A')}
-STAGE         : {lead_dict.get('stage', 'N/A')}
-VALUE (RM)    : {lead_dict.get('value_rm', 0):,}
-
-Based on Chin Hin Group tribal knowledge and the BU profiles in your system prompt,
-provide the optimal BU assignment with match score, rationale, and synergy bundle.
-    """.strip()
-
     logger.info(
-        "Calling GPT-4o for lead analysis — project='%s'",
+        "Invoking LangGraph lead workflow for project='%s'",
         lead_dict.get("project_name"),
     )
 
+    initial_state: LeadProcessingState = {
+        "raw_lead_dict": lead_dict,
+        "vector": [],
+        "is_duplicate": False,
+        "ai_analysis": None,
+    }
+
     try:
-        completion = _openai_client.chat.completions.create(
-            model=GPT4O_DEPLOYMENT,
-            response_format={"type": "json_object"},  # Enforces valid JSON output
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,      # Low temperature = more deterministic BU routing
-            max_tokens=512,       # AIAnalysis fields are concise; 512 is generous
-        )
-
-        raw_content: str = completion.choices[0].message.content
-        logger.debug("GPT-4o raw response: %s", raw_content)
-
-        # Parse and return the structured JSON
-        result: Dict[str, Any] = json.loads(raw_content)
-
-        # Validate required keys are present
-        required_keys = {"top_match_bu", "match_score", "rationale", "synergy_bundle"}
-        missing = required_keys - result.keys()
-        if missing:
-            raise ValueError(f"GPT-4o response missing required keys: {missing}")
-
-        logger.info(
-            "AI analysis complete — BU='%s', score=%d",
-            result.get("top_match_bu"),
-            result.get("match_score", 0),
-        )
-        return result
-
-    except json.JSONDecodeError as exc:
-        logger.error("GPT-4o returned invalid JSON: %s", exc)
-        raise ValueError(f"AI engine returned non-JSON response: {exc}") from exc
+        final_state = lead_workflow.invoke(initial_state)
     except Exception as exc:
-        logger.error("GPT-4o analysis failed: %s", exc)
+        logger.error("LangGraph workflow invocation failed: %s", exc)
         raise
+
+    ai_analysis = final_state.get("ai_analysis")
+
+    if ai_analysis is None:
+        # Graph took the duplicate branch — GPT-4o was intentionally skipped.
+        logger.info(
+            "Workflow short-circuited (duplicate) for project='%s' — "
+            "returning placeholder analysis.",
+            lead_dict.get("project_name"),
+        )
+        return _DUPLICATE_PLACEHOLDER.copy()
+
+    logger.info(
+        "Workflow complete — BU='%s', score=%d",
+        ai_analysis.get("top_match_bu"),
+        ai_analysis.get("match_score", 0),
+    )
+    return ai_analysis
 
 
 # ---------------------------------------------------------------------------
@@ -292,18 +506,17 @@ def extract_leads_from_pdf_text(pdf_text: str) -> List[Dict[str, Any]]:
     logger.info("Calling GPT-4o to extract leads from PDF (%d chars).", len(truncated))
 
     try:
-        completion = _openai_client.chat.completions.create(
-            model=GPT4O_DEPLOYMENT,
-            response_format={"type": "json_object"},
-            messages=[
+        response = _llm_pdf.invoke(
+            [
                 {"role": "system", "content": _PDF_EXTRACTION_PROMPT},
-                {"role": "user", "content": f"Extract all projects from this PDF text:\n\n{truncated}"},
-            ],
-            temperature=0.1,
-            max_tokens=4096,
+                {
+                    "role": "user",
+                    "content": f"Extract all projects from this PDF text:\n\n{truncated}",
+                },
+            ]
         )
 
-        raw: str = completion.choices[0].message.content
+        raw: str = response.content
         parsed = json.loads(raw)
 
         # GPT may return {"projects": [...]} or directly [...] — normalise both.

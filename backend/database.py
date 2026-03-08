@@ -663,6 +663,27 @@ def get_audit_logs_by_lead(lead_id: str) -> List[Dict[str, Any]]:
         raise
 
 
+def delete_lead(lead_id: str) -> None:
+    """
+    Hard-delete a lead document from the Cosmos DB Leads container.
+
+    Args:
+        lead_id: The UUID of the lead to delete (also the partition key).
+
+    Raises:
+        KeyError: If the document does not exist.
+        azure.cosmos.exceptions.CosmosHttpResponseError on DB failure.
+    """
+    try:
+        _leads_container.delete_item(item=lead_id, partition_key=lead_id)
+        logger.info("Lead deleted — id='%s'", lead_id)
+    except exceptions.CosmosResourceNotFoundError:
+        raise KeyError(f"Lead id='{lead_id}' not found in Cosmos DB.")
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to delete lead id='%s': %s", lead_id, exc)
+        raise
+
+
 def update_conflict(conflict_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     """
     Apply a partial update to an existing conflict document (e.g., resolve it).
