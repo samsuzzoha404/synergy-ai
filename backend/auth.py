@@ -83,7 +83,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # Passwords are hashed before being written to Cosmos DB.
 # ---------------------------------------------------------------------------
 _DEMO_USERS: list[Dict[str, Any]] = [
-    {"email": "marvis@chinhin.com",  "name": "Marvis Chin",                    "role": "Admin",    "bu": None,                    "password": "admin123"},
+    {"email": "marvis@chinhin.com",  "name": "Marvis",                    "role": "Admin",    "bu": None,                    "password": "admin123"},
     {"email": "sales@stucken.com",   "name": "Sales Rep (Stucken AAC)",         "role": "Sales_Rep","bu": "Stucken AAC",            "password": "sales123"},
     {"email": "sales@ajiya.com",     "name": "Sales Rep (Ajiya Metal/Glass)",   "role": "Sales_Rep","bu": "Ajiya Metal / Glass",    "password": "sales123"},
     {"email": "sales@gcast.com",     "name": "Sales Rep (G-Cast)",              "role": "Sales_Rep","bu": "G-Cast",                 "password": "sales123"},

@@ -1,0 +1,33 @@
+{
+  "routes": [
+    {
+      "route": "/api/*",
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/*",
+      "serve": "/index.html",
+      "statusCode": 200
+    }
+  ],
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/assets/*", "/*.{css,js,ico,svg,png,jpg,gif,webp,woff,woff2,ttf,eot}"]
+  },
+  "responseOverrides": {
+    "404": {
+      "rewrite": "/index.html",
+      "statusCode": 200
+    }
+  },
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-XSS-Protection": "1; mode=block",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()"
+  },
+  "mimeTypes": {
+    ".json": "text/json"
+  }
+}

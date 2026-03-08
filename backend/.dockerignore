@@ -1,0 +1,34 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables — NEVER include in Docker image
+.env
+*.env.local
+
+# Test files
+*_test.py
+test_*.py
+admin_full_test.py
+debug_test.py
+
+# IDE and OS artefacts
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Byte-compiled / optimised files
+*.pyc

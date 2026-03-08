@@ -571,9 +571,9 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
 
             {/* Action Footer */}
             {/* LW-B6 fix: hide Approve & Assign for leads that are already in a
-                terminal state (Merged, Discarded, Won, Lost). These leads need
+                terminal state (Merged, Discarded, Won, Lost, Assigned). These leads need
                 no further action and re-assigning them would create inconsistencies. */}
-            {["Merged", "Discarded", "Won", "Lost"].includes(lead.status) ? (
+            {["Merged", "Discarded", "Won", "Lost", "Assigned"].includes(lead.status) ? (
               <div className="border-t border-border p-4 flex-shrink-0 bg-card">
                 <p className="text-xs text-muted-foreground text-center">
                   This lead is{" "}
@@ -605,8 +605,10 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                     Defer Review
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground text-center">
-                  SMS + email will be sent to {lead.matches[0]?.bu} Sales Manager upon approval
+                <p className="text-xs text-muted-foreground text-center leading-relaxed break-words">
+                  SMS + email will be sent to{" "}
+                  <span className="font-medium">{lead.matches[0]?.bu}</span>{" "}
+                  Sales Manager upon approval
                 </p>
               </div>
             )}

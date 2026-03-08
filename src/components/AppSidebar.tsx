@@ -6,7 +6,6 @@ import {
   TableProperties,
   AlertTriangle,
   Upload,
-  Zap,
   ChevronLeft,
   ChevronRight,
   X,
@@ -53,23 +52,27 @@ export function AppSidebar({ mobileOpen, onMobileClose }: SidebarProps) {
         !isMobile && (collapsed ? "w-16" : "w-60")
       )}
     >
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-4 py-5 border-b border-sidebar-border flex-shrink-0">
-        <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center flex-shrink-0">
-          <Zap className="w-4 h-4 text-white" />
-        </div>
-        {(!collapsed || isMobile) && (
-          <div className="min-w-0">
-            <p className="text-sidebar-primary-foreground font-bold text-sm leading-tight truncate">Synergy Sales</p>
-            <p className="text-sidebar-foreground text-xs opacity-70 truncate">Genius · Chin Hin Group</p>
+      {/* Logo — only visible when expanded */}
+      {(!collapsed || isMobile) && (
+        <div className="flex-shrink-0 border-b border-sidebar-border">
+          {/* Logo strip — transparent bg, logo auto-adapts via drop-shadow */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <img
+              src="/logo/chinhin logo.png"
+              alt="Chin Hin Group"
+              className="h-7 w-auto object-contain"
+            />
+            {isMobile && (
+              <button
+                onClick={onMobileClose}
+                className="flex-shrink-0 text-sidebar-foreground hover:text-sidebar-primary-foreground transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
-        )}
-        {isMobile && (
-          <button onClick={onMobileClose} className="ml-auto text-sidebar-foreground hover:text-sidebar-primary-foreground transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Nav */}
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto scrollbar-thin">

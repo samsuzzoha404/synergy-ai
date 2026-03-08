@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Zap, Mail, User, ArrowRight, Lock, BarChart3, Users, TrendingUp,
+  Mail, User, ArrowRight, Lock, BarChart3, Users, TrendingUp,
   ShieldCheck, Sparkles, ChevronRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -33,11 +33,11 @@ function PremiumInput({
     <div
       className="relative rounded-xl transition-all duration-200"
       style={{
-        background: "rgba(255,255,255,0.04)",
+        background: "rgba(0,0,0,0.25)",
         border: focused
-          ? "1.5px solid hsl(217 91% 60% / 0.7)"
-          : "1.5px solid rgba(255,255,255,0.08)",
-        boxShadow: focused ? "0 0 0 3px hsl(217 91% 60% / 0.12)" : "none",
+          ? "1.5px solid hsl(217 91% 60% / 0.75)"
+          : "1.5px solid rgba(255,255,255,0.10)",
+        boxShadow: focused ? "0 0 0 3px hsl(217 91% 60% / 0.15)" : "none",
       }}
     >
       <Icon
@@ -53,7 +53,7 @@ function PremiumInput({
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        className="w-full h-12 pl-11 pr-4 bg-transparent text-sm text-white placeholder:text-white/25 outline-none rounded-xl"
+        className="w-full h-10 pl-11 pr-4 bg-transparent text-sm text-white placeholder:text-white/25 outline-none rounded-xl"
       />
     </div>
   );
@@ -143,111 +143,85 @@ export default function Auth() {
 
   return (
     <div
-      className="min-h-screen flex"
+      className="h-screen overflow-hidden flex"
       style={{ background: "hsl(240 10% 3%)" }}
     >
       {/* ══════════════ LEFT — Brand Panel ══════════════ */}
-      <div className="hidden lg:flex lg:w-[52%] xl:w-[54%] relative overflow-hidden flex-col">
+      <div className="hidden lg:flex lg:w-[50%] xl:w-[52%] h-full relative overflow-hidden flex-col">
 
-        {/* Deep layered background */}
+        {/* Layered background */}
         <div className="absolute inset-0" style={{ background: "hsl(240 10% 4%)" }} />
-
-        {/* Primary glow — top-left */}
         <div
-          className="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full pointer-events-none"
-          style={{
-            background: "radial-gradient(circle, hsl(217 91% 55% / 0.18) 0%, transparent 70%)",
-          }}
+          className="absolute -top-24 -left-24 w-[500px] h-[500px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(circle, hsl(217 91% 55% / 0.18) 0%, transparent 70%)" }}
         />
-        {/* Secondary glow — bottom-right */}
         <div
-          className="absolute bottom-0 right-0 w-[500px] h-[500px] rounded-full pointer-events-none"
-          style={{
-            background: "radial-gradient(circle, hsl(217 91% 45% / 0.12) 0%, transparent 70%)",
-          }}
+          className="absolute bottom-0 right-0 w-[400px] h-[400px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(circle, hsl(217 91% 45% / 0.12) 0%, transparent 70%)" }}
         />
-        {/* Accent glow — centre */}
-        <div
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[700px] h-[400px] rounded-full pointer-events-none"
-          style={{
-            background: "radial-gradient(ellipse, hsl(217 91% 50% / 0.07) 0%, transparent 65%)",
-          }}
-        />
-
-        {/* Subtle dot-grid */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
-            backgroundImage:
-              "radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px)",
+            backgroundImage: "radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px)",
             backgroundSize: "28px 28px",
           }}
         />
-
-        {/* Diagonal stripe accent */}
         <div
           className="absolute inset-0 pointer-events-none opacity-[0.025]"
           style={{
-            backgroundImage:
-              "repeating-linear-gradient(45deg, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 0, transparent 50%)",
+            backgroundImage: "repeating-linear-gradient(45deg, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 0, transparent 50%)",
             backgroundSize: "14px 14px",
           }}
         />
 
-        {/* Content */}
-        <div className="relative z-10 flex flex-col h-full p-10 xl:p-14">
+        {/* Content — full height, no overflow */}
+        <div className="relative z-10 flex flex-col h-full px-9 py-7 xl:px-12 xl:py-9">
 
-          {/* Logo */}
+          {/* ── Logo ── */}
           <motion.div
-            className="flex items-center gap-3"
+            className="flex-shrink-0 flex items-center gap-3"
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+            transition={{ duration: 0.45 }}
           >
             <div
-              className="w-10 h-10 rounded-2xl flex items-center justify-center shadow-xl"
-              style={{ background: "linear-gradient(135deg, hsl(217 91% 55%), hsl(217 91% 40%))" }}
+              className="flex-shrink-0 flex items-center justify-center rounded-xl px-3 py-2"
+              style={{
+                background: "rgba(255,255,255,0.92)",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
+              }}
             >
-              <Zap className="w-5 h-5 text-white" />
+              <img src="/logo/chinhin.png" alt="Chin Hin Group" className="h-10 w-auto object-contain" />
             </div>
             <div>
-              <p className="text-white font-bold text-sm leading-tight tracking-tight">
+              <p className="text-[17px] font-semibold tracking-tight text-white/90 leading-tight">
                 Synergy Sales Genius
               </p>
-              <p
-                className="text-[10px] tracking-[0.2em] uppercase font-medium"
-                style={{ color: "hsl(217 91% 65%)" }}
-              >
+              <p className="text-[10px] tracking-[0.18em] uppercase font-medium" style={{ color: "hsl(217 91% 65%)" }}>
                 Chin Hin Group
               </p>
             </div>
           </motion.div>
 
-          {/* Hero copy */}
-          <div className="flex-1 flex flex-col justify-center max-w-[420px]">
+          {/* ── Hero — flex-1 ── */}
+          <div className="flex-1 flex flex-col justify-center max-w-[400px]">
             <motion.div
-              initial={{ opacity: 0, y: 24 }}
+              initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.15, duration: 0.55 }}
+              transition={{ delay: 0.12, duration: 0.5 }}
             >
-              {/* Eyebrow pill */}
+              {/* Eyebrow */}
               <div
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full mb-7"
-                style={{
-                  background: "hsl(217 91% 55% / 0.12)",
-                  border: "1px solid hsl(217 91% 55% / 0.22)",
-                }}
+                className="inline-flex items-center gap-2 px-3 py-1 rounded-full mb-4"
+                style={{ background: "hsl(217 91% 55% / 0.12)", border: "1px solid hsl(217 91% 55% / 0.22)" }}
               >
                 <Sparkles className="w-3 h-3" style={{ color: "hsl(217 91% 65%)" }} />
-                <span
-                  className="text-[11px] font-semibold tracking-[0.18em] uppercase"
-                  style={{ color: "hsl(217 91% 70%)" }}
-                >
+                <span className="text-[11px] font-semibold tracking-[0.16em] uppercase" style={{ color: "hsl(217 91% 70%)" }}>
                   Enterprise AI CRM
                 </span>
               </div>
 
-              <h1 className="text-[2.6rem] xl:text-5xl font-extrabold text-white leading-[1.1] tracking-tight mb-5">
+              <h1 className="text-[2.05rem] xl:text-[2.45rem] font-extrabold text-white leading-[1.1] tracking-tight mb-3.5">
                 Close more deals,<br />
                 <span
                   style={{
@@ -260,63 +234,82 @@ export default function Auth() {
                 </span>
               </h1>
 
-              <p className="text-white/45 text-[15px] leading-relaxed mb-10 max-w-[350px]">
+              <p className="text-white/45 text-[13.5px] leading-relaxed mb-5 max-w-[340px]">
                 Unify your sales pipeline, detect duplicate leads, and surface
-                cross-BU synergies with AI-powered intelligence — all in one
-                workspace.
+                cross-BU synergies with AI-powered intelligence — all in one workspace.
               </p>
 
               {/* Feature list */}
-              <div className="flex flex-col gap-3 mb-12">
+              <div className="flex flex-col gap-2 mb-5">
                 {features.map(({ icon: Icon, text }) => (
-                  <div key={text} className="flex items-center gap-3">
+                  <div key={text} className="flex items-center gap-2.5">
                     <div
-                      className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                      className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
                       style={{ background: "hsl(217 91% 55% / 0.14)" }}
                     >
-                      <Icon className="w-3.5 h-3.5" style={{ color: "hsl(217 91% 65%)" }} />
+                      <Icon className="w-3 h-3" style={{ color: "hsl(217 91% 65%)" }} />
                     </div>
-                    <span className="text-white/55 text-sm">{text}</span>
+                    <span className="text-white/55 text-[13px]">{text}</span>
                   </div>
                 ))}
               </div>
 
-              {/* Stats row */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* Stats */}
+              <div className="grid grid-cols-3 gap-2.5">
                 {stats.map(({ icon: Icon, label, value }, i) => (
                   <motion.div
                     key={label}
-                    initial={{ opacity: 0, y: 12 }}
+                    initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.35 + i * 0.08, duration: 0.4 }}
-                    className="rounded-2xl p-4"
-                    style={{
-                      background: "rgba(255,255,255,0.035)",
-                      border: "1px solid rgba(255,255,255,0.07)",
-                    }}
+                    transition={{ delay: 0.3 + i * 0.07, duration: 0.35 }}
+                    className="rounded-xl p-3"
+                    style={{ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(255,255,255,0.07)" }}
                   >
-                    <Icon className="w-4 h-4 mb-2.5" style={{ color: "hsl(217 91% 62%)" }} />
-                    <p className="text-white font-bold text-lg leading-none mb-1">{value}</p>
-                    <p className="text-white/35 text-[10px] leading-tight font-medium uppercase tracking-wide">
-                      {label}
-                    </p>
+                    <Icon className="w-3.5 h-3.5 mb-2" style={{ color: "hsl(217 91% 62%)" }} />
+                    <p className="text-white font-bold text-base leading-none mb-1">{value}</p>
+                    <p className="text-white/35 text-[9px] leading-tight font-medium uppercase tracking-wide">{label}</p>
                   </motion.div>
                 ))}
               </div>
             </motion.div>
           </div>
 
-          {/* Footer row */}
-          <div className="flex items-center justify-between">
-            <p className="text-white/20 text-xs">© {new Date().getFullYear()} Chin Hin Group</p>
+          {/* ── BU Logo Strip ── */}
+          <motion.div
+            className="flex-shrink-0"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.45, duration: 0.5 }}
+          >
+            <p className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-3">
+              Our Business Units
+            </p>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+              {[
+                { src: "/logo/starken.png",   alt: "Starken"   },
+                { src: "/logo/ajiya.png",     alt: "Ajiya"     },
+                { src: "/logo/gcast.png",     alt: "G-Cast"    },
+                { src: "/logo/signature.png", alt: "Signature" },
+                { src: "/logo/fiamma.png",    alt: "Fiamma"    },
+                { src: "/logo/alliance.png",  alt: "Alliance"  },
+                { src: "/logo/ppg.png",       alt: "PPG"       },
+              ].map(({ src, alt }) => (
+                <img
+                  key={alt}
+                  src={src}
+                  alt={alt}
+                  className="h-6 object-contain opacity-45 grayscale hover:grayscale-0 hover:opacity-100 transition-all duration-300 cursor-pointer"
+                />
+              ))}
+            </div>
+          </motion.div>
+
+          {/* ── Footer ── */}
+          <div className="flex-shrink-0 flex items-center justify-between mt-4">
+            <p className="text-white/20 text-[11px]">© {new Date().getFullYear()} Chin Hin Group</p>
             <div className="flex gap-4">
               {["Privacy", "Terms", "Support"].map((l) => (
-                <span
-                  key={l}
-                  className="text-white/20 text-xs hover:text-white/45 cursor-pointer transition-colors duration-200"
-                >
-                  {l}
-                </span>
+                <span key={l} className="text-white/20 text-[11px] hover:text-white/45 cursor-pointer transition-colors duration-200">{l}</span>
               ))}
             </div>
           </div>
@@ -325,85 +318,67 @@ export default function Auth() {
 
       {/* ══════════════ RIGHT — Form Panel ══════════════ */}
       <div
-        className="flex-1 flex flex-col relative overflow-hidden"
+        className="flex-1 h-full flex flex-col relative overflow-hidden"
         style={{ background: "hsl(240 10% 4%)" }}
       >
-        {/* Subtle right-panel glow */}
+        {/* Glows */}
         <div
-          className="absolute top-0 right-0 w-[400px] h-[400px] rounded-full pointer-events-none"
-          style={{
-            background: "radial-gradient(circle, hsl(217 91% 50% / 0.06) 0%, transparent 70%)",
-          }}
+          className="absolute top-0 right-0 w-[380px] h-[380px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(circle, hsl(217 91% 50% / 0.06) 0%, transparent 70%)" }}
         />
         <div
-          className="absolute bottom-0 left-0 w-[300px] h-[300px] rounded-full pointer-events-none"
-          style={{
-            background: "radial-gradient(circle, hsl(217 91% 50% / 0.05) 0%, transparent 70%)",
-          }}
+          className="absolute bottom-0 left-0 w-[280px] h-[280px] rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(circle, hsl(217 91% 50% / 0.05) 0%, transparent 70%)" }}
         />
 
         {/* Mobile topbar */}
-        <div className="flex lg:hidden items-center px-6 pt-7 pb-4">
+        <div className="flex lg:hidden flex-shrink-0 items-center px-6 pt-6 pb-3 gap-2.5">
           <div
-            className="w-8 h-8 rounded-xl flex items-center justify-center"
-            style={{ background: "linear-gradient(135deg, hsl(217 91% 55%), hsl(217 91% 40%))" }}
+            className="flex-shrink-0 flex items-center justify-center rounded-lg px-2 py-1.5"
+            style={{ background: "rgba(255,255,255,0.92)", boxShadow: "0 2px 10px rgba(0,0,0,0.3)" }}
           >
-            <Zap className="w-4 h-4 text-white" />
+            <img src="/logo/chinhin.png" alt="Chin Hin Group" className="h-6 w-auto object-contain" />
           </div>
-          <span className="ml-2.5 font-bold text-sm text-white">Synergy Sales Genius</span>
+          <span className="font-semibold text-sm tracking-tight text-white/90">Synergy Sales Genius</span>
         </div>
 
-        {/* Centred form */}
-        <div className="relative z-10 flex-1 flex items-center justify-center px-6 sm:px-10 py-6">
-          <div className="w-full max-w-[400px]">
+        {/* ── Centred form — flex-1 ── */}
+        <div className="relative z-10 flex-1 flex items-center justify-center px-5 sm:px-9">
+          <div className="w-full max-w-[390px]">
 
             {/* Glass card */}
             <div
-              className="rounded-3xl p-7 sm:p-8"
+              className="rounded-2xl p-5 sm:p-6"
               style={{
-                background: "rgba(255,255,255,0.025)",
-                border: "1px solid rgba(255,255,255,0.07)",
-                backdropFilter: "blur(20px)",
-                boxShadow:
-                  "0 24px 80px -12px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06)",
+                background: "rgba(255,255,255,0.03)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                backdropFilter: "blur(24px)",
+                boxShadow: "0 24px 80px -12px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.08)",
               }}
             >
               <AnimatePresence mode="wait">
                 <motion.div
                   key={mode}
-                  initial={{ opacity: 0, y: 10 }}
+                  initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.22, ease: "easeOut" }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
                 >
                   {/* Header */}
-                  <div className="mb-5">
-                    {/* Mode badge */}
+                  <div className="mb-4">
                     <div
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full mb-5"
-                      style={{
-                        background: "hsl(217 91% 55% / 0.1)",
-                        border: "1px solid hsl(217 91% 55% / 0.18)",
-                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full mb-3"
+                      style={{ background: "hsl(217 91% 55% / 0.1)", border: "1px solid hsl(217 91% 55% / 0.18)" }}
                     >
-                      <div
-                        className="w-1.5 h-1.5 rounded-full"
-                        style={{ background: "hsl(217 91% 65%)" }}
-                      />
-                      <span
-                        className="text-[11px] font-semibold tracking-wide"
-                        style={{ color: "hsl(217 91% 68%)" }}
-                      >
+                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: "hsl(217 91% 65%)" }} />
+                      <span className="text-[11px] font-semibold tracking-wide" style={{ color: "hsl(217 91% 68%)" }}>
                         {mode === "signin" ? "Returning Member" : "New Account"}
                       </span>
                     </div>
-
-                    <h2 className="text-2xl font-bold text-white tracking-tight leading-snug mb-2">
-                      {mode === "signin"
-                        ? "Welcome back"
-                        : "Create your account"}
+                    <h2 className="text-xl font-bold text-white tracking-tight leading-snug mb-1">
+                      {mode === "signin" ? "Welcome back" : "Create your account"}
                     </h2>
-                    <p className="text-sm" style={{ color: "rgba(255,255,255,0.38)" }}>
+                    <p className="text-[13px]" style={{ color: "rgba(255,255,255,0.38)" }}>
                       {mode === "signin"
                         ? "Sign in to access your sales workspace."
                         : "Get started in seconds — no credit card required."}
@@ -411,88 +386,47 @@ export default function Auth() {
                   </div>
 
                   {/* Form */}
-                  <form onSubmit={handleSubmit} className="space-y-3">
+                  <form onSubmit={handleSubmit} className="space-y-2.5">
                     {mode === "signup" && (
-                      <div className="space-y-1.5">
-                        <label htmlFor="name" className="block text-xs font-semibold text-white/50 uppercase tracking-wider pl-1">
-                          Full Name
-                        </label>
-                        <PremiumInput
-                          id="name"
-                          icon={User}
-                          placeholder="Ahmad Razif"
-                          value={name}
-                          onChange={setName}
-                          required
-                        />
+                      <div className="space-y-1">
+                        <label htmlFor="name" className="block text-[11px] font-semibold text-white/50 uppercase tracking-wider pl-1">Full Name</label>
+                        <PremiumInput id="name" icon={User} placeholder="Ahmad Razif" value={name} onChange={setName} required />
                       </div>
                     )}
 
-                    <div className="space-y-1.5">
-                      <label htmlFor="email" className="block text-xs font-semibold text-white/50 uppercase tracking-wider pl-1">
-                        Work Email
-                      </label>
-                      <PremiumInput
-                        id="email"
-                        type="email"
-                        icon={Mail}
-                        placeholder="you@chinhin.com"
-                        value={email}
-                        onChange={setEmail}
-                        required
-                      />
+                    <div className="space-y-1">
+                      <label htmlFor="email" className="block text-[11px] font-semibold text-white/50 uppercase tracking-wider pl-1">Work Email</label>
+                      <PremiumInput id="email" type="email" icon={Mail} placeholder="you@chinhin.com" value={email} onChange={setEmail} required />
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label htmlFor="password" className="block text-xs font-semibold text-white/50 uppercase tracking-wider pl-1">
-                        Password
-                      </label>
-                      <PremiumInput
-                        id="password"
-                        type="password"
-                        icon={Lock}
-                        placeholder="••••••••"
-                        value={password}
-                        onChange={setPassword}
-                        required
-                      />
+                    <div className="space-y-1">
+                      <label htmlFor="password" className="block text-[11px] font-semibold text-white/50 uppercase tracking-wider pl-1">Password</label>
+                      <PremiumInput id="password" type="password" icon={Lock} placeholder="••••••••" value={password} onChange={setPassword} required />
                     </div>
 
                     {mode === "signin" && (
-                      <div className="flex justify-end -mt-1">
-                        <button
-                          type="button"
-                          className="text-xs font-medium transition-colors duration-150"
-                          style={{ color: "hsl(217 91% 62%)" }}
-                        >
+                      <div className="flex justify-end">
+                        <button type="button" className="text-[11px] font-medium transition-colors duration-150" style={{ color: "hsl(217 91% 62%)" }}>
                           Forgot password?
                         </button>
                       </div>
                     )}
 
                     {/* Submit */}
-                    <div className="pt-2">
+                    <div className="pt-1">
                       <button
                         type="submit"
                         disabled={loading}
-                        className="w-full h-10 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all duration-200 relative overflow-hidden group"
+                        className="w-full h-9 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all duration-200 relative overflow-hidden group"
                         style={{
-                          background: loading
-                            ? "hsl(217 91% 45%)"
-                            : "linear-gradient(135deg, hsl(217 91% 55%), hsl(217 91% 45%))",
+                          background: loading ? "hsl(217 91% 45%)" : "linear-gradient(135deg, hsl(217 91% 55%), hsl(217 91% 45%))",
                           color: "#fff",
-                          boxShadow: loading
-                            ? "none"
-                            : "0 4px 24px hsl(217 91% 50% / 0.4), 0 1px 0 rgba(255,255,255,0.12) inset",
+                          boxShadow: loading ? "none" : "0 4px 20px hsl(217 91% 50% / 0.4), 0 1px 0 rgba(255,255,255,0.12) inset",
                         }}
                       >
-                        {/* Shimmer overlay on hover */}
                         <span
                           className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-                          style={{
-                            background:
-                              "linear-gradient(135deg, hsl(217 91% 60%), hsl(217 91% 50%))",
-                          }}
+                          style={{ background: "linear-gradient(135deg, hsl(217 91% 60%), hsl(217 91% 50%))" }}
                         />
                         <span className="relative flex items-center gap-2">
                           {loading ? (
@@ -513,15 +447,14 @@ export default function Auth() {
                   </form>
 
                   {/* Divider */}
-                  <div className="flex items-center gap-3 my-4">
+                  <div className="flex items-center gap-3 my-3">
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
-                    <span className="text-xs" style={{ color: "rgba(255,255,255,0.22)" }}>Demo Accounts — Quick Login</span>
+                    <span className="text-[11px]" style={{ color: "rgba(255,255,255,0.22)" }}>Demo Accounts</span>
                     <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
                   </div>
 
-                  {/* ── Demo login: Admin full-width + BU 4-col grid ── */}
-                  <div className="mb-4 flex flex-col gap-1.5">
-                    {/* Admin button — full width */}
+                  {/* Demo buttons */}
+                  <div className="flex flex-col gap-1.5 mb-3">
                     {DEMO_ACCOUNTS_UI.filter(a => a.isAdmin).map(({ label, email }) => (
                       <button
                         key={email}
@@ -529,19 +462,16 @@ export default function Auth() {
                         onClick={() => handleDemoLogin(email, 'admin123')}
                         disabled={loading}
                         title={email}
-                        className="w-full h-8 rounded-xl text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 hover:brightness-125 disabled:opacity-40"
-                        style={{
-                          background: "hsl(217 91% 55% / 0.15)",
-                          border: "1px solid hsl(217 91% 55% / 0.35)",
-                          color: "hsl(217 91% 75%)",
-                        }}
+                        className="w-full h-7 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-all duration-200 active:scale-95 disabled:opacity-40"
+                        style={{ background: "hsl(217 91% 55% / 0.12)", border: "1px solid hsl(217 91% 55% / 0.30)", color: "hsl(217 91% 78%)" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "hsl(217 91% 55% / 0.22)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "hsl(217 91% 55% / 0.12)")}
                       >
                         <ShieldCheck className="w-3 h-3 flex-shrink-0" />
                         <span>{label}</span>
                       </button>
                     ))}
-                    {/* BU Sales Rep buttons — 4-column grid */}
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-4 gap-1">
                       {DEMO_ACCOUNTS_UI.filter(a => !a.isAdmin).map(({ label, email }) => (
                         <button
                           key={email}
@@ -549,12 +479,10 @@ export default function Auth() {
                           onClick={() => handleDemoLogin(email, 'sales123')}
                           disabled={loading}
                           title={`${label} · ${email}`}
-                          className="h-8 rounded-xl text-[10px] font-semibold flex items-center justify-center gap-1 transition-all duration-200 hover:brightness-125 disabled:opacity-40 px-1"
-                          style={{
-                            background: "rgba(255,255,255,0.04)",
-                            border: "1px solid rgba(255,255,255,0.09)",
-                            color: "rgba(255,255,255,0.50)",
-                          }}
+                          className="h-7 rounded-lg text-[10px] font-semibold flex items-center justify-center transition-all duration-200 active:scale-95 disabled:opacity-40 px-1 text-slate-400 hover:text-slate-200"
+                          style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.07)" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.10)"; e.currentTarget.style.border = "1px solid rgba(255,255,255,0.18)"; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.border = "1px solid rgba(255,255,255,0.07)"; }}
                         >
                           <span className="truncate">{label}</span>
                         </button>
@@ -566,12 +494,12 @@ export default function Auth() {
                   <button
                     type="button"
                     onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
-                    className="w-full flex items-center justify-center gap-1.5 text-sm transition-colors duration-150 group"
-                    style={{ color: "rgba(255,255,255,0.35)" }}
+                    className="w-full flex items-center justify-center gap-1 text-[13px] transition-colors duration-150 group"
+                    style={{ color: "rgba(255,255,255,0.32)" }}
                   >
-                    {mode === "signin" ? "New to Synergy? " : "Already have an account? "}
+                    {mode === "signin" ? "New to Synergy?" : "Already have an account?"}
                     <span
-                      className="font-semibold flex items-center gap-0.5 group-hover:gap-1.5 transition-all duration-150"
+                      className="font-semibold flex items-center gap-0.5 group-hover:gap-1 transition-all duration-150 ml-1"
                       style={{ color: "hsl(217 91% 65%)" }}
                     >
                       {mode === "signin" ? "Create account" : "Sign in"}
@@ -583,30 +511,22 @@ export default function Auth() {
             </div>
 
             {/* Trust badges */}
-            <div className="flex items-center justify-center gap-5 mt-4">
+            <div className="flex items-center justify-center gap-5 mt-3">
               {[
                 { icon: ShieldCheck, label: "SOC 2 Compliant" },
                 { icon: Lock,        label: "256-bit Encrypted" },
               ].map(({ icon: Icon, label }) => (
-                <div
-                  key={label}
-                  className="flex items-center gap-1.5"
-                  style={{ color: "rgba(255,255,255,0.22)" }}
-                >
+                <div key={label} className="flex items-center gap-1.5" style={{ color: "rgba(255,255,255,0.20)" }}>
                   <Icon className="w-3 h-3" />
                   <span className="text-[11px] font-medium">{label}</span>
                 </div>
               ))}
             </div>
+
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="relative z-10 pb-7 text-center">
-          <p className="text-[11px]" style={{ color: "rgba(255,255,255,0.18)" }}>
-            © {new Date().getFullYear()} Chin Hin Group · Synergy Sales Genius
-          </p>
-        </div>
+
       </div>
     </div>
   );

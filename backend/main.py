@@ -50,10 +50,11 @@ from auth import (
     create_access_token,
     create_refresh_token,
     get_current_user,
+    get_password_hash as _hash_password,
     verify_password,
     verify_refresh_token,
 )
-from models import AIAnalysis, AuditLog, BulkIngestResponse, ConflictResolutionUpdate, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate
+from models import AIAnalysis, AuditLog, BulkIngestResponse, ConflictResolutionUpdate, LeadActivity, LeadActivityCreate, LeadCreate, LeadDB, LeadResponse, LeadUpdate, UserCreate, UserUpdate, UserProfile
 import telemetry
 import notifications
 
@@ -73,6 +74,16 @@ logger = logging.getLogger(__name__)
 # No-op if APPLICATIONINSIGHTS_CONNECTION_STRING is absent (local dev).
 # ---------------------------------------------------------------------------
 telemetry.setup_azure_monitor()
+
+# ---------------------------------------------------------------------------
+# Security — warn loudly if the default JWT secret is used in production
+# ---------------------------------------------------------------------------
+_DEFAULT_JWT_SECRET = "synergy-hackathon-secret-key-2026-replace-before-prod"
+if os.getenv("JWT_SECRET_KEY", _DEFAULT_JWT_SECRET) == _DEFAULT_JWT_SECRET:
+    logger.warning(
+        "⚠️  JWT_SECRET_KEY is using the insecure default value. "
+        "Set JWT_SECRET_KEY to a strong random secret before deploying to production!"
+    )
 
 # ---------------------------------------------------------------------------
 # Rate Limiter — IP-based, in-memory counters (resets on restart).
@@ -132,6 +143,10 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
 # ---------------------------------------------------------------------------
 # FastAPI Application
 # ---------------------------------------------------------------------------
+# Disable Swagger UI and ReDoc in production for security.
+# Set ENABLE_DOCS=true (or run in development) to re-enable them.
+_ENABLE_DOCS = os.getenv("ENABLE_DOCS", "false").lower() == "true"
+
 app = FastAPI(
     title="Synergy Sales Genius API",
     description=(
@@ -139,8 +154,9 @@ app = FastAPI(
         "Powered by Azure OpenAI GPT-4o and Azure Cosmos DB."
     ),
     version="1.0.0",
-    docs_url="/docs",       # Swagger UI
-    redoc_url="/redoc",     # ReDoc UI
+    docs_url="/docs" if _ENABLE_DOCS else None,
+    redoc_url="/redoc" if _ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if _ENABLE_DOCS else None,
     lifespan=lifespan,
 )
 
@@ -380,7 +396,6 @@ def get_bu_contacts(request: Request) -> List[Dict[str, str]]:
 # Admin User Management  —  POST / GET / PATCH / DELETE /api/admin/users
 # All endpoints require Admin role.  Sales_Reps receive 403.
 # ---------------------------------------------------------------------------
-from models import UserCreate, UserUpdate, UserProfile  # noqa: E402  (already imported indirectly)
 
 
 def _require_admin(current_user: CurrentUser) -> None:
@@ -449,14 +464,13 @@ async def admin_create_user(
     # Prevent duplicate email
     if database.get_user_by_email(payload.email.lower()):
         raise HTTPException(status_code=409, detail=f"Email already registered: {payload.email}")
-    from auth import get_password_hash as _hash
     doc = {
         "id": str(uuid.uuid4()),
         "email": payload.email.lower(),
         "name": payload.name,
         "role": payload.role,
         "bu": payload.bu if payload.role == "Sales_Rep" else None,
-        "hashed_password": _hash(payload.password),
+        "hashed_password": _hash_password(payload.password),
     }
     database.save_user(doc)
     logger.info("Admin '%s' created user '%s'", current_user.email, doc["email"])
@@ -483,7 +497,6 @@ async def admin_update_user(
     if payload.role and payload.role not in {"Admin", "Sales_Rep"}:
         raise HTTPException(status_code=422, detail="role must be 'Admin' or 'Sales_Rep'.")
     # Build the fields dict — only include keys the caller actually sent
-    from auth import get_password_hash as _hash
     fields: Dict[str, Any] = {}
     if payload.name is not None:
         fields["name"] = payload.name
@@ -494,7 +507,7 @@ async def admin_update_user(
     if payload.bu is not None:
         fields["bu"] = payload.bu
     if payload.password is not None:
-        fields["hashed_password"] = _hash(payload.password)
+        fields["hashed_password"] = _hash_password(payload.password)
     # Get existing user to resolve email from id
     all_users = database.list_users()
     target = next((u for u in all_users if u["id"] == user_id), None)

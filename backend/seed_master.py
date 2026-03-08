@@ -49,7 +49,7 @@ import database                             # save_user(), save_lead(), users_co
 _DEMO_USERS: List[Dict[str, Any]] = [
     {
         "email": "marvis@chinhin.com",
-        "name": "Marvis Chin",
+        "name": "Marvis",
         "role": "Admin",
         "bu": None,
         "password": "admin123",
