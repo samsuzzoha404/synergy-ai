@@ -28,10 +28,10 @@ export function KPICard({ label, sublabel, value, trend, icon, accent = "bg-prim
   const TrendIcon = isPositive ? TrendingUp : TrendingDown;
 
   return (
-    <div className="bg-card border border-border rounded-xl p-5 shadow-card hover:shadow-md hover:border-primary/20 transition-all duration-200 group cursor-default">
+    <div className="bg-card border border-border rounded-xl p-5 shadow-card hover:border-white/10 transition-all duration-200 group cursor-default active:scale-[0.98]">
       <div className="flex items-start justify-between mb-4">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}</p>
+          <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">{label}</p>
           <p className="text-xs text-muted-foreground mt-0.5 truncate">{sublabel}</p>
         </div>
         <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm", accent)}>
@@ -40,7 +40,7 @@ export function KPICard({ label, sublabel, value, trend, icon, accent = "bg-prim
       </div>
 
       <div className="space-y-2">
-        <p className="text-2xl font-black text-foreground tracking-tight">{value}</p>
+        <p className="text-2xl font-black text-foreground tracking-tighter font-mono">{value}</p>
         <div className={cn(
           "inline-flex items-center gap-1 text-xs font-semibold rounded-full px-2 py-0.5 border",
           trendBg, trendColor

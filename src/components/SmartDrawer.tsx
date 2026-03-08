@@ -116,13 +116,18 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
             animate={{ x: 0 }}
             exit={{ x: "100%" }}
             transition={{ type: "spring", damping: 28, stiffness: 280 }}
-            className="fixed right-0 top-0 h-full w-full max-w-[520px] bg-card shadow-drawer z-50 flex flex-col overflow-hidden border-l border-border"
+            className="fixed right-0 top-0 h-full w-full max-w-[520px] z-50 flex flex-col overflow-hidden"
+            style={{
+              background: "hsl(240 10% 5%)",
+              borderLeft: "1px solid rgba(255,255,255,0.07)",
+              boxShadow: "inset 1px 0 0 rgba(255,255,255,0.05), -10px 0 40px -5px rgba(0,0,0,0.6)",
+            }}
           >
             {/* Gradient header strip */}
             <div className="gradient-primary h-1 flex-shrink-0" />
 
             {/* Header */}
-            <div className="flex items-start justify-between p-5 border-b border-border flex-shrink-0 bg-card">
+            <div className="flex items-start justify-between p-5 border-b border-white/[0.06] flex-shrink-0" style={{ background: "hsl(240 10% 6%)" }}>
               <div className="min-w-0 pr-4">
                 <div className="flex items-center gap-2 mb-1.5">
                   <StatusBadge status={lead.status} />
@@ -150,7 +155,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
             </div>
 
             {/* Tabs */}
-            <div className="flex border-b border-border flex-shrink-0 bg-card px-5">
+            <div className="flex border-b border-white/[0.06] flex-shrink-0 px-5" style={{ background: "hsl(240 10% 6%)" }}>
               {(["overview", "contact", "activities", "audit"] as const).map((tab) => (
                 <button
                   key={tab}
@@ -190,7 +195,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                         color: "text-foreground"
                       },
                     ].map(({ icon: Icon, label, value, color }) => (
-                      <div key={label} className="bg-muted/50 rounded-xl p-3.5 border border-border hover:border-primary/20 transition-colors">
+                      <div key={label} className="bg-white/[0.04] rounded-xl p-3.5 border border-white/[0.06] hover:border-primary/30 transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]">
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <Icon className="w-3.5 h-3.5 text-muted-foreground" />
                           <p className="text-xs text-muted-foreground font-medium">{label}</p>

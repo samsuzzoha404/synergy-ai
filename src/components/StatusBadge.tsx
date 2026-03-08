@@ -9,9 +9,9 @@ interface MatchScoreBadgeProps {
 
 export function MatchScoreBadge({ score, bu, size = "md" }: MatchScoreBadgeProps) {
   const color =
-    score >= 80 ? "bg-success-light text-success border-success/20" :
-    score >= 60 ? "bg-warning-light text-warning border-warning/20" :
-    "bg-destructive/10 text-destructive border-destructive/20";
+    score >= 80 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+    score >= 60 ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+    "bg-red-500/10 text-red-400 border-red-500/20";
 
   return (
     <div className={cn("flex items-center gap-1.5", size === "sm" ? "text-xs" : "text-sm")}>
@@ -29,21 +29,21 @@ interface StatusBadgeProps {
 
 export function StatusBadge({ status }: StatusBadgeProps) {
   const config: Record<string, string> = {
-    "New": "bg-info-light text-info border-info/20",
-    "In Review": "bg-warning-light text-warning border-warning/20",
-    "Under Review": "bg-warning-light text-warning border-warning/20",
-    "Assigned": "bg-success-light text-success border-success/20",
-    "Duplicate Alert": "bg-destructive/10 text-destructive border-destructive/20",
-    "Won": "bg-success-light text-success border-success/20",
-    "Lost": "bg-muted text-muted-foreground border-border",
-    "Merged": "bg-primary/10 text-primary border-primary/20",
-    "Discarded": "bg-muted text-muted-foreground border-border",
+    "New": "bg-sky-500/10 text-sky-400 border-sky-500/20",
+    "In Review": "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    "Under Review": "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    "Assigned": "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    "Duplicate Alert": "bg-red-500/10 text-red-400 border-red-500/20",
+    "Won": "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+    "Lost": "bg-slate-500/10 text-slate-400 border-slate-500/20",
+    "Merged": "bg-blue-500/10 text-blue-400 border-blue-500/20",
+    "Discarded": "bg-slate-500/10 text-slate-400 border-slate-500/20",
   };
 
   const dotColor: Record<string, string> = {
-    "Duplicate Alert": "bg-destructive",
-    "Merged": "bg-primary",
-    "Discarded": "bg-muted-foreground",
+    "Duplicate Alert": "bg-red-400",
+    "Merged": "bg-blue-400",
+    "Discarded": "bg-slate-400",
   };
 
   return (

@@ -144,13 +144,13 @@ export default function Auth() {
   return (
     <div
       className="min-h-screen flex"
-      style={{ background: "hsl(222 47% 6%)" }}
+      style={{ background: "hsl(240 10% 3%)" }}
     >
       {/* ══════════════ LEFT — Brand Panel ══════════════ */}
       <div className="hidden lg:flex lg:w-[52%] xl:w-[54%] relative overflow-hidden flex-col">
 
         {/* Deep layered background */}
-        <div className="absolute inset-0" style={{ background: "hsl(222 47% 7%)" }} />
+        <div className="absolute inset-0" style={{ background: "hsl(240 10% 4%)" }} />
 
         {/* Primary glow — top-left */}
         <div
@@ -326,7 +326,7 @@ export default function Auth() {
       {/* ══════════════ RIGHT — Form Panel ══════════════ */}
       <div
         className="flex-1 flex flex-col relative overflow-hidden"
-        style={{ background: "hsl(222 47% 8%)" }}
+        style={{ background: "hsl(240 10% 4%)" }}
       >
         {/* Subtle right-panel glow */}
         <div
@@ -361,11 +361,11 @@ export default function Auth() {
             <div
               className="rounded-3xl p-7 sm:p-8"
               style={{
-                background: "rgba(255,255,255,0.03)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                backdropFilter: "blur(12px)",
+                background: "rgba(255,255,255,0.025)",
+                border: "1px solid rgba(255,255,255,0.07)",
+                backdropFilter: "blur(20px)",
                 boxShadow:
-                  "0 24px 80px -12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04) inset",
+                  "0 24px 80px -12px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06)",
               }}
             >
               <AnimatePresence mode="wait">

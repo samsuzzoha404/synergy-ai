@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, SlidersHorizontal, ArrowUpDown, X } from "lucide-react";
+import { Search, SlidersHorizontal, ArrowUpDown, X, ArrowRight } from "lucide-react";
 import { Lead, LeadStatus, LeadStage } from "@/data/mockData";
 import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { SmartDrawer } from "@/components/SmartDrawer";
@@ -180,45 +180,45 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
         )}
       </div>
 
-      {/* Table */}
-      <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
+        <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
         <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full min-w-[680px]">
             <thead>
-              <tr className="border-b border-border bg-muted/30">
+              <tr className="border-b border-border bg-muted/20">
                 <th className="px-5 py-3.5 text-left">
-                  <button onClick={() => handleSort("projectName")} className="group text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors">
+                  <button onClick={() => handleSort("projectName")} className="group text-[11px] font-semibold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors">
                     Project Name <SortIcon k="projectName" />
                   </button>
                 </th>
                 <th className="px-5 py-3.5 text-left hidden md:table-cell">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Location</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Location</span>
                 </th>
                 <th className="px-5 py-3.5 text-right">
-                  <button onClick={() => handleSort("value")} className="group text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors">
+                  <button onClick={() => handleSort("value")} className="group text-[11px] font-semibold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors">
                     Value <SortIcon k="value" />
                   </button>
                 </th>
                 <th className="px-5 py-3.5 text-left hidden lg:table-cell">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Stage</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Stage</span>
                 </th>
                 <th className="px-5 py-3.5 text-left">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">AI Match</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">AI Match</span>
                 </th>
                 <th className="px-5 py-3.5 text-left hidden xl:table-cell">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Synergy Bundle</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Synergy Bundle</span>
                 </th>
                 <th className="px-5 py-3.5 text-left">
-                  <button onClick={() => handleSort("status")} className="group text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors">
+                  <button onClick={() => handleSort("status")} className="group text-[11px] font-semibold text-muted-foreground uppercase tracking-widest hover:text-foreground transition-colors">
                     Status <SortIcon k="status" />
                   </button>
                 </th>
+                <th className="px-3 py-3.5 w-8" />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-20 text-center">
+                  <td colSpan={8} className="py-20 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center">
                         <Search className="w-6 h-6 text-muted-foreground" />
@@ -239,7 +239,7 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
                     key={lead.id}
                     layout
                     className={cn(
-                      "table-row-hover transition-colors",
+                      "table-row-hover transition-colors group",
                       lead.isDuplicate && "bg-destructive/5"
                     )}
                     onClick={() => {
@@ -309,6 +309,9 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
                     </td>
                     <td className="px-5 py-3.5">
                       <StatusBadge status={lead.status} />
+                    </td>
+                    <td className="px-3 py-3.5 w-8">
+                      <ArrowRight className="w-3.5 h-3.5 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
                     </td>
                   </motion.tr>
                 ))

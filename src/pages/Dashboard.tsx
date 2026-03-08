@@ -47,12 +47,17 @@ interface CustomBarTooltipProps {
 const CustomBarTooltip = ({ active, payload, label }: CustomBarTooltipProps) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-card border border-border rounded-xl p-3 shadow-lg text-xs">
-        <p className="font-bold text-foreground mb-2">{label}</p>
+      <div style={{
+        background: "rgba(8,8,16,0.88)",
+        border: "1px solid rgba(255,255,255,0.07)",
+        borderRadius: 12,
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
+      }} className="p-3 text-xs backdrop-blur-xl">
+        <p className="font-bold text-white/90 mb-2 text-[11px] uppercase tracking-widest">{label}</p>
         {payload.map((p: TooltipPayloadEntry) => (
-          <p key={p.name} className="flex items-center gap-2 text-muted-foreground">
-            <span className="w-2 h-2 rounded-sm inline-block" style={{ background: p.fill }} />
-            {p.name === "leads" ? "Leads" : "Value (RM M)"}: <strong className="text-foreground">{p.value}{p.name === "value" ? "M" : ""}</strong>
+          <p key={p.name} className="flex items-center gap-2" style={{ color: "rgba(255,255,255,0.55)" }}>
+            <span className="w-2 h-2 rounded-sm inline-block flex-shrink-0" style={{ background: p.fill }} />
+            {p.name === "leads" ? "Leads" : "Value (RM M)"}: <strong style={{ color: "rgba(255,255,255,0.88)" }}>{p.value}{p.name === "value" ? "M" : ""}</strong>
           </p>
         ))}
       </div>
@@ -283,15 +288,21 @@ export default function Dashboard() {
               <AreaChart data={computedTrendData}>
                 <defs>
                   <linearGradient id="colorLeads" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="hsl(217, 91%, 50%)" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="hsl(217, 91%, 50%)" stopOpacity={0} />
+                    <stop offset="0%" stopColor="hsl(217, 80%, 55%)" stopOpacity={0.4} />
+                    <stop offset="100%" stopColor="hsl(217, 80%, 55%)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
                 <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 10, fontSize: 12 }} />
-                <Area type="monotone" dataKey="leads" stroke="hsl(217, 91%, 50%)" strokeWidth={2} fill="url(#colorLeads)" name="Leads" />
+                <Tooltip contentStyle={{
+                  background: "rgba(8,8,16,0.88)",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: 12,
+                  fontSize: 12,
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
+                }} />
+                <Area type="monotone" dataKey="leads" stroke="hsl(217, 80%, 55%)" strokeWidth={2} fill="url(#colorLeads)" name="Leads" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -326,7 +337,13 @@ export default function Dashboard() {
                 </Pie>
                 <Tooltip
                   formatter={(val: number | string) => [`${val} leads`, ""]}
-                  contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 10, fontSize: 12 }}
+                  contentStyle={{
+                    background: "rgba(8,8,16,0.88)",
+                    border: "1px solid rgba(255,255,255,0.07)",
+                    borderRadius: 12,
+                    fontSize: 12,
+                    boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
+                  }}
                 />
               </RechartsPie>
             </ResponsiveContainer>
@@ -364,10 +381,10 @@ export default function Dashboard() {
             </div>
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={leadsbyBU} barSize={32}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
                 <XAxis dataKey="bu" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                <Tooltip content={<CustomBarTooltip />} cursor={{ fill: "hsl(217 91% 50% / 0.06)" }} />
+                <Tooltip content={<CustomBarTooltip />} cursor={{ fill: "rgba(255,255,255,0.03)" }} />
                 <Bar dataKey="value" name="value" stackId="a" fill="hsl(199, 89%, 48%)" radius={[0, 0, 0, 0]} />
                 <Bar dataKey="leads" name="leads" stackId="a" fill="hsl(217, 91%, 50%)" radius={[4, 4, 0, 0]}>
                   <LabelList dataKey="leads" position="top" fontSize={10} fill="hsl(var(--muted-foreground))" formatter={(v: number) => v} />
@@ -433,10 +450,11 @@ export default function Dashboard() {
               <thead>
                 <tr className="border-b border-border bg-muted/30">
                   {["Project", "Value", "Stage", "AI Match", "Status"].map((h) => (
-                    <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">
                       {h}
                     </th>
                   ))}
+                  <th className="px-3 py-3 w-8" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -444,7 +462,7 @@ export default function Dashboard() {
                   <tr
                     key={lead.id}
                     className={cn(
-                      "table-row-hover transition-colors",
+                      "table-row-hover transition-colors group",
                       lead.isDuplicate && "bg-destructive/5"
                     )}
                     onClick={() => {
@@ -478,6 +496,9 @@ export default function Dashboard() {
                     </td>
                     <td className="px-5 py-3.5">
                       <StatusBadge status={lead.status} />
+                    </td>
+                    <td className="px-3 py-3.5 w-8">
+                      <ArrowUpRight className="w-3.5 h-3.5 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
                     </td>
                   </tr>
                 ))}
