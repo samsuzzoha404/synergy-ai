@@ -217,8 +217,9 @@ def read_lead(lead_id: str) -> Dict[str, Any]:
 
 def get_all_leads() -> List[Dict[str, Any]]:
     """
-    Retrieve ALL lead documents.
-    Use get_leads_page() for API responses to avoid timeout on large datasets.
+    Retrieve ALL lead documents including Merged/Discarded ones.
+    Internal use only (e.g. RBAC BU filtering for conflict queue).
+    Use get_leads_page() or get_active_leads() for API responses.
     """
     try:
         items = list(
@@ -227,16 +228,57 @@ def get_all_leads() -> List[Dict[str, Any]]:
                 enable_cross_partition_query=True,
             )
         )
-        logger.info("Fetched %d leads from CosmosDB", len(items))
+        logger.info("Fetched %d leads from CosmosDB (all, incl. resolved)", len(items))
         return items
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch leads: %s", exc)
         raise
 
 
+# ---------------------------------------------------------------------------
+# Soft-exclude filters
+# Leads with these statuses are removed from specific query scopes:
+#
+#   _DISCARDED_FILTER  — pipeline pages & counts (Discarded leads are gone).
+#                        Merged leads remain visible in the workbench so users
+#                        can see the audit trail and AI data post-resolution.
+#
+#   _RESOLVED_VECTOR_FILTER — vector comparison for duplicate detection.
+#                        Both Merged AND Discarded are excluded so a newly
+#                        ingested lead cannot be flagged as a duplicate of an
+#                        already-resolved record.
+# ---------------------------------------------------------------------------
+_DISCARDED_FILTER = "c.status != 'Discarded'"
+_RESOLVED_VECTOR_FILTER = "c.status != 'Merged' AND c.status != 'Discarded'"
+
+
+def get_active_leads() -> List[Dict[str, Any]]:
+    """
+    Retrieve only ACTIVE lead documents (excludes Discarded).
+    Merged leads are included — they remain visible in the pipeline with their
+    AI analysis intact, but carry a 'Merged' status badge.
+    Use this for RBAC filtering where truly-gone leads should be ignored.
+    """
+    try:
+        items = list(
+            _leads_container.query_items(
+                query=f"SELECT * FROM c WHERE {_DISCARDED_FILTER} ORDER BY c._ts DESC",
+                enable_cross_partition_query=True,
+            )
+        )
+        logger.info("Fetched %d active leads from CosmosDB", len(items))
+        return items
+    except exceptions.CosmosHttpResponseError as exc:
+        logger.error("Failed to fetch active leads: %s", exc)
+        raise
+
+
 def get_all_lead_vectors() -> List[Dict[str, Any]]:
     """
-    Fetch ONLY the ``id`` and ``vector`` fields from every lead document.
+    Fetch ONLY the ``id`` and ``vector`` fields from every ACTIVE lead document.
+
+    Merged and Discarded leads are excluded so they cannot re-trigger a
+    duplicate-conflict alert against a freshly ingested lead.
 
     This is the authoritative, DB-backed source used for duplicate detection.
     Because it is sourced from Cosmos DB rather than an in-memory cache, it is:
@@ -253,12 +295,15 @@ def get_all_lead_vectors() -> List[Dict[str, Any]]:
     try:
         items = list(
             _leads_container.query_items(
-                query="SELECT c.id, c.vector FROM c WHERE IS_DEFINED(c.vector)",
+                query=(
+                    "SELECT c.id, c.vector FROM c "
+                    f"WHERE IS_DEFINED(c.vector) AND {_RESOLVED_VECTOR_FILTER}"
+                ),
                 enable_cross_partition_query=True,
             )
         )
         vectors = [{"id": doc["id"], "vector": doc["vector"]} for doc in items if doc.get("vector")]
-        logger.debug("Vector projection fetched — %d leads with embeddings", len(vectors))
+        logger.debug("Vector projection fetched — %d active leads with embeddings", len(vectors))
         return vectors
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch lead vectors: %s", exc)
@@ -267,7 +312,9 @@ def get_all_lead_vectors() -> List[Dict[str, Any]]:
 
 def get_leads_page(skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
     """
-    Fetch a paginated page of leads using Cosmos DB OFFSET LIMIT syntax.
+    Fetch a paginated page of ACTIVE leads using Cosmos DB OFFSET LIMIT syntax.
+    Soft-excludes Merged and Discarded leads (resolved duplicates) so they do
+    not appear in the active pipeline view.
 
     Args:
         skip:  Number of records to skip (0-based offset).
@@ -280,14 +327,15 @@ def get_leads_page(skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
         items = list(
             _leads_container.query_items(
                 query=(
-                    "SELECT * FROM c "
-                    "ORDER BY c._ts DESC "
+                    f"SELECT * FROM c "
+                    f"WHERE {_DISCARDED_FILTER} "
+                    f"ORDER BY c._ts DESC "
                     f"OFFSET {int(skip)} LIMIT {int(limit)}"
                 ),
                 enable_cross_partition_query=True,
             )
         )
-        logger.info("Paged leads fetch — skip=%d limit=%d returned=%d", skip, limit, len(items))
+        logger.info("Paged active leads — skip=%d limit=%d returned=%d", skip, limit, len(items))
         return items
     except exceptions.CosmosHttpResponseError as exc:
         logger.error("Failed to fetch paged leads (skip=%d, limit=%d): %s", skip, limit, exc)
@@ -296,13 +344,13 @@ def get_leads_page(skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
 
 def count_leads() -> int:
     """
-    Return the total number of lead documents in the Leads container.
+    Return the count of ACTIVE lead documents (excludes Merged and Discarded).
     Used to populate the X-Total-Count response header for pagination.
     """
     try:
         results = list(
             _leads_container.query_items(
-                query="SELECT VALUE COUNT(1) FROM c",
+                query=f"SELECT VALUE COUNT(1) FROM c WHERE {_DISCARDED_FILTER}",
                 enable_cross_partition_query=True,
             )
         )
@@ -332,14 +380,23 @@ def save_conflict(conflict_data: Dict[str, Any]) -> Dict[str, Any]:
         raise
 
 
-def get_all_conflicts() -> List[Dict[str, Any]]:
+def get_all_conflicts(pending_only: bool = True) -> List[Dict[str, Any]]:
     """
-    Retrieve all conflict documents for the ConflictResolution dashboard.
+    Retrieve conflict documents for the ConflictResolution dashboard.
+
+    Args:
+        pending_only: When True (default), only returns unresolved conflicts
+                      (status = 'Pending Review'). Pass False to retrieve ALL
+                      conflicts including already-resolved ones (for audit use).
     """
     try:
+        if pending_only:
+            query = "SELECT * FROM c WHERE c.status = 'Pending Review' ORDER BY c._ts DESC"
+        else:
+            query = "SELECT * FROM c ORDER BY c._ts DESC"
         return list(
             _conflicts_container.query_items(
-                query="SELECT * FROM c ORDER BY c._ts DESC",
+                query=query,
                 enable_cross_partition_query=True,
             )
         )

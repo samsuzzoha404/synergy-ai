@@ -92,8 +92,19 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
   // All KPI data flows from the hook — RBAC filtering happens inside useLeads().
-  const { data } = useLeads();
+  const { data, dataUpdatedAt } = useLeads();
   const leads = data?.leads ?? [];
+
+  // Compute a human-readable relative time since the data was last fetched
+  // so the "Live" badge shows honest staleness instead of a hardcoded string.
+  const lastUpdatedLabel = useMemo(() => {
+    if (!dataUpdatedAt) return "…";
+    const diffMs = Date.now() - dataUpdatedAt;
+    const mins = Math.floor(diffMs / 60_000);
+    if (mins < 1) return "just now";
+    if (mins === 1) return "1m ago";
+    return `${mins}m ago`;
+  }, [dataUpdatedAt]);
 
   // ── Dynamic KPI Computation ─────────────────────────────────────────────
   // 1. Total Leads: live count from merged mock + API leads
@@ -240,7 +251,7 @@ export default function Dashboard() {
           <div className="flex items-center gap-2 flex-shrink-0">
             <div className="hidden sm:flex items-center gap-1.5 text-xs bg-success-light text-success border border-success/20 rounded-lg px-3 py-1.5 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-              Live · 2m ago
+              Live · {lastUpdatedLabel}
             </div>
           </div>
         </div>
@@ -437,7 +448,7 @@ export default function Dashboard() {
                       lead.isDuplicate && "bg-destructive/5"
                     )}
                     onClick={() => {
-                      if (lead.isDuplicate) navigate("/conflicts");
+                      if (lead.isDuplicate && lead.status === "Duplicate Alert") navigate("/conflicts");
                       else setSelectedLead(lead);
                     }}
                   >
@@ -454,14 +465,16 @@ export default function Dashboard() {
                       <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full">{lead.stage}</span>
                     </td>
                     <td className="px-5 py-3.5">
-                      {lead.isDuplicate ? (
-                        <span className="text-xs text-destructive font-semibold flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />
-                          Duplicate
-                        </span>
-                      ) : (
-                        <MatchScoreBadge score={lead.matches[0]?.score ?? 0} bu={lead.matches[0]?.bu ?? ""} size="sm" />
-                      )}
+                      {/* Always show AI score — small indicator for unresolved conflicts */}
+                      <div className="space-y-1">
+                        {lead.isDuplicate && lead.status === "Duplicate Alert" && (
+                          <span className="text-[10px] text-destructive font-semibold flex items-center gap-1 leading-none">
+                            <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse flex-shrink-0" />
+                            Conflict pending
+                          </span>
+                        )}
+                        <MatchScoreBadge score={lead.matches[0]?.score ?? 0} bu={lead.matches[0]?.bu ?? "—"} size="sm" />
+                      </div>
                     </td>
                     <td className="px-5 py-3.5">
                       <StatusBadge status={lead.status} />

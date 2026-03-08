@@ -31,15 +31,26 @@ export function StatusBadge({ status }: StatusBadgeProps) {
   const config: Record<string, string> = {
     "New": "bg-info-light text-info border-info/20",
     "In Review": "bg-warning-light text-warning border-warning/20",
+    "Under Review": "bg-warning-light text-warning border-warning/20",
     "Assigned": "bg-success-light text-success border-success/20",
     "Duplicate Alert": "bg-destructive/10 text-destructive border-destructive/20",
     "Won": "bg-success-light text-success border-success/20",
     "Lost": "bg-muted text-muted-foreground border-border",
+    "Merged": "bg-primary/10 text-primary border-primary/20",
+    "Discarded": "bg-muted text-muted-foreground border-border",
+  };
+
+  const dotColor: Record<string, string> = {
+    "Duplicate Alert": "bg-destructive",
+    "Merged": "bg-primary",
+    "Discarded": "bg-muted-foreground",
   };
 
   return (
-    <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border", config[status] || "bg-muted text-muted-foreground")}>
-      {status === "Duplicate Alert" && <span className="w-1.5 h-1.5 rounded-full bg-destructive mr-1.5 animate-pulse" />}
+    <span className={cn("inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border", config[status] ?? "bg-muted text-muted-foreground border-border")}>
+      {dotColor[status] && (
+        <span className={cn("w-1.5 h-1.5 rounded-full mr-1.5", dotColor[status], status === "Duplicate Alert" && "animate-pulse")} />
+      )}
       {status}
     </span>
   );

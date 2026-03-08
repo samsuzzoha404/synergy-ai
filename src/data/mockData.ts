@@ -1,4 +1,4 @@
-export type LeadStatus = "New" | "In Review" | "Under Review" | "Assigned" | "Duplicate Alert" | "Won" | "Lost";
+export type LeadStatus = "New" | "In Review" | "Under Review" | "Assigned" | "Duplicate Alert" | "Won" | "Lost" | "Merged" | "Discarded";
 export type LeadStage = "Planning" | "Tender" | "Construction" | "Completed";
 export type ProjectType = "High-Rise" | "Industrial" | "Commercial" | "Infrastructure" | "Renovation";
 

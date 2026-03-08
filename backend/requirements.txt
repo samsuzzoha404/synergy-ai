@@ -36,6 +36,9 @@ bcrypt==4.2.1                      # Underlying bcrypt implementation used by pa
 slowapi==0.1.9                     # IP-based rate limiting middleware for FastAPI (wraps `limits`)
 limits==3.14.0                     # Backend library used by slowapi for rate counters
 
+# --- PDF Parsing ---
+pdfplumber==0.11.4             # Extract text and tables from uploaded PDF files
+
 # --- Azure Monitor / Application Insights ---
 # Provides OpenTelemetry auto-instrumentation: request traces, dependency tracking,
 # exception telemetry, log correlation, and live metrics streamed to App Insights.

@@ -29,7 +29,7 @@ function formatCurrency(value: number) {
   return `RM ${value.toLocaleString()}`;
 }
 
-const STATUS_OPTIONS = ["All", "New", "In Review", "Under Review", "Assigned", "Won", "Lost", "Duplicate Alert"];
+const STATUS_OPTIONS = ["All", "New", "In Review", "Under Review", "Assigned", "Won", "Lost", "Duplicate Alert", "Merged", "Discarded"];
 const BU_OPTIONS = ["All", ...BU_NAMES];
 
 const CHART_COLORS = [

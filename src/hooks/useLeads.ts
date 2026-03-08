@@ -61,17 +61,24 @@ function mapApiStatus(status: string): Lead['status'] {
     'Won': 'Won',
     'Lost': 'Lost',
     'In Review': 'In Review',
+    'Merged': 'Merged',       // conflict resolved — leads merged into one record
+    'Discarded': 'Discarded', // conflict resolved — duplicate lead discarded
   };
   return statusMap[status] ?? 'New';
 }
 
-/** Map BU names to distinct chart colours for the SmartDrawer match badges. */
+/** Map BU names to distinct chart colours for the SmartDrawer match badges.
+ * Keys must match the exact strings returned by the AI engine (as seen in
+ * ai_analysis.top_match_bu). Verified against live DB output 2026-03-08.
+ */
 const BU_COLORS: Record<string, string> = {
-  'Synergy Precast Concrete': 'hsl(217, 91%, 50%)',
-  'Synergy Formwork & Scaffolding': 'hsl(142, 71%, 45%)',
-  'Ajiya Metal / Glass': 'hsl(32, 95%, 50%)',
-  'YTL Cement': 'hsl(280, 70%, 55%)',
-  'Pan Malaysia Pools': 'hsl(0, 72%, 51%)',
+  'Stucken AAC':            'hsl(217, 91%, 50%)',  // blue
+  'AJIYA METAL / GLASS':    'hsl(32,  95%, 50%)',  // amber
+  'SIGNATURE ALLIANCE':     'hsl(280, 70%, 55%)',  // violet
+  'SIGNATURE KITCHEN':      'hsl(320, 75%, 55%)',  // pink
+  'G-CAST':                 'hsl(142, 71%, 45%)',  // green
+  'PPG HING':               'hsl(0,   72%, 51%)',  // red
+  'Fiamma Holding':         'hsl(24,  95%, 50%)',  // orange
 };
 const DEFAULT_BU_COLOR = 'hsl(217, 91%, 50%)';
 
@@ -136,10 +143,15 @@ export function useLeads(page = 0) {
 /**
  * Fetches ALL leads in a single request (limit=1000) for reporting purposes.
  * Not paginated — returns a flat array.
+ *
+ * LW-B5 fix: queryKey uses ['leads', 'all'] (under the 'leads' namespace) so
+ * it is correctly invalidated by the prefix-match in all mutation onSuccess
+ * callbacks (useCreateLead, useUpdateLeadStage, useResolveConflict, etc.).
+ * The original key 'allLeadsFlat' was outside the namespace and never busted.
  */
 export function useAllLeads() {
   return useQuery<Lead[]>({
-    queryKey: ['allLeadsFlat'],
+    queryKey: ['leads', 'all'],
     queryFn: async () => {
       const response = await apiClient.get<APILead[]>('/api/leads', {
         params: { skip: 0, limit: 1000 },
@@ -359,6 +371,9 @@ export function useResolveConflict() {
       // Invalidate all conflict cache entries (prefix match handles role/bu variants).
       // This is more correct than setQueryData since the keyed cache includes role+bu.
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.conflicts });
+      // Bug B6 fix: also invalidate the leads cache so isDuplicate / status flags
+      // reflect the resolution action (e.g. Discarded lead no longer shows as a dup).
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.allLeads });
     },
   });
 }
@@ -387,8 +402,10 @@ export function useBulkUpload() {
         '/api/leads/bulk',
         formData,
         {
-          // Let the browser set the multipart boundary automatically
-          headers: { 'Content-Type': 'multipart/form-data' },
+          // Do NOT set Content-Type manually for multipart/form-data.
+          // Axios/XHR must auto-generate it with the correct multipart boundary.
+          // An explicit header without a boundary causes server-side parse failures.
+          headers: { 'Content-Type': undefined },
           // Generous timeout — large CSVs with many GPT-4o calls take time
           timeout: 300_000,
         },

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Brain, Sparkles, CheckCircle2, Building2, MapPin, DollarSign,
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/use-toast";
 import { useLeadActivities, useCreateActivity, useAuditLogs, useUpdateLeadStage, useBUContacts } from "@/hooks/useLeads";
 import type { AuditLog, LeadActivity } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 
 interface SmartDrawerProps {
   lead: Lead | null;
@@ -31,6 +32,19 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
   const [activeTab, setActiveTab] = useState<"overview" | "contact" | "activities" | "audit">("overview");
   const [noteText, setNoteText] = useState("");
   const [noteType, setNoteType] = useState<"Note" | "Call" | "Email">("Note");
+
+  const { user } = useAuth();
+
+  // LW-B4 fix: reset tab and note state whenever a different lead is opened.
+  // Without this, switching from lead A (on Activities tab) to lead B keeps
+  // the Activities tab active, showing B's activities under the wrong context.
+  useEffect(() => {
+    if (lead) {
+      setActiveTab("overview");
+      setNoteText("");
+      setNoteType("Note");
+    }
+  }, [lead?.id]);
 
   const { data: activities = [], isLoading: activitiesLoading } = useLeadActivities(lead?.id ?? null);
   const { mutateAsync: createActivity, isPending: submittingNote } = useCreateActivity(lead?.id ?? "");
@@ -366,7 +380,7 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
                         if (!noteText.trim()) return;
                         try {
                           await createActivity({
-                            user_name: "Sales Rep",
+                            user_name: user?.name ?? "Sales Rep",
                             activity_type: noteType,
                             content: noteText.trim(),
                           });
@@ -551,33 +565,46 @@ export function SmartDrawer({ lead, onClose }: SmartDrawerProps) {
             </div>
 
             {/* Action Footer */}
-            <div className="border-t border-border p-4 flex-shrink-0 bg-card space-y-3">
-              <div className="flex gap-3">
-                <Button
-                  onClick={handleApprove}
-                  disabled={assigning}
-                  className="flex-1 gradient-primary text-white font-bold"
-                >
-                  {assigning ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-                      Assigning...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4 mr-2" />
-                      Approve & Assign
-                    </>
-                  )}
-                </Button>
-                <Button variant="outline" onClick={onClose} className="flex-1">
-                  Defer Review
-                </Button>
+            {/* LW-B6 fix: hide Approve & Assign for leads that are already in a
+                terminal state (Merged, Discarded, Won, Lost). These leads need
+                no further action and re-assigning them would create inconsistencies. */}
+            {["Merged", "Discarded", "Won", "Lost"].includes(lead.status) ? (
+              <div className="border-t border-border p-4 flex-shrink-0 bg-card">
+                <p className="text-xs text-muted-foreground text-center">
+                  This lead is{" "}
+                  <span className="font-semibold capitalize">{lead.status.toLowerCase()}</span>
+                  {" "}— no further action required.
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground text-center">
-                SMS + email will be sent to {lead.matches[0]?.bu} Sales Manager upon approval
-              </p>
-            </div>
+            ) : (
+              <div className="border-t border-border p-4 flex-shrink-0 bg-card space-y-3">
+                <div className="flex gap-3">
+                  <Button
+                    onClick={handleApprove}
+                    disabled={assigning}
+                    className="flex-1 gradient-primary text-white font-bold"
+                  >
+                    {assigning ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                        Assigning...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                        Approve & Assign
+                      </>
+                    )}
+                  </Button>
+                  <Button variant="outline" onClick={onClose} className="flex-1">
+                    Defer Review
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground text-center">
+                  SMS + email will be sent to {lead.matches[0]?.bu} Sales Manager upon approval
+                </p>
+              </div>
+            )}
           </motion.div>
         </>
       )}

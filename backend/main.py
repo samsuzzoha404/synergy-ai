@@ -21,6 +21,7 @@ Run locally:
 
 import asyncio
 import csv
+import datetime
 import io
 import logging
 import os
@@ -29,6 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pdfplumber
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -578,8 +580,9 @@ async def create_lead(
         )
 
     # --- Step 2: Duplicate detection (Cosmos DB cosine similarity — restart & multi-instance safe) ---
+    # Wrapped in to_thread so the blocking Cosmos DB read doesn't stall the event loop.
     new_id = str(uuid.uuid4())
-    is_duplicate, matched_lead_id, dup_score = _check_duplicate(vector, new_id)
+    is_duplicate, matched_lead_id, dup_score = await asyncio.to_thread(_check_duplicate, vector, new_id)
 
     # --- Step 3: AI lead analysis (GPT-4o) ---
     try:
@@ -608,8 +611,11 @@ async def create_lead(
     )
 
     # --- Step 5: Persist to Cosmos DB ---
+    lead_doc = lead_db.model_dump()
+    # Stamp the ingestion date so the SmartDrawer can display 'Created' date.
+    lead_doc["created_date"] = datetime.datetime.utcnow().strftime("%Y-%m-%d")
     try:
-        database.save_lead(lead_db.model_dump())
+        database.save_lead(lead_doc)
     except Exception as exc:
         logger.error("Cosmos DB write failed: %s", exc)
         raise HTTPException(
@@ -649,9 +655,9 @@ async def create_lead(
             lead_id=new_id,
         )
 
-    # Pass the full payload dict so any extra top-level fields (developer, floors,
-    # gfa, created_date) submitted by the client survive into the response.
-    return LeadResponse.from_lead_db(lead_db, raw_doc=lead_db.model_dump())
+    # Pass lead_doc (which includes created_date) so all top-level fields
+    # (developer, floors, gfa, created_date) appear in the API response.
+    return LeadResponse.from_lead_db(lead_db, raw_doc=lead_doc)
 
 
 # ---------------------------------------------------------------------------
@@ -671,53 +677,138 @@ async def bulk_ingest_leads(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> BulkIngestResponse:
     """
-    Accepts a CSV file (UTF-8 encoded) in the BCI export format.
-    Runs the full AI pipeline for each valid row:
+    Accepts a CSV **or PDF** file in the BCI export format.
+    Runs the full AI pipeline for each identified lead:
       1. Generate embedding → text-embedding-3-small
       2. Duplicate check   → cosine similarity vs. Cosmos DB vectors
       3. AI BU analysis    → GPT-4o with tribal knowledge
       4. Persist           → Cosmos DB Leads container
 
-    Expected CSV columns (case-insensitive, order-independent):
+    CSV — Expected columns (case-insensitive, order-independent):
       Project Name | Location | GDV | Stage | Developer | GFA | Type
+
+    PDF — Text-based BCI report. GPT-4o extracts all project records
+          from the raw text automatically. Scanned/image PDFs are not supported.
 
     Returns a summary: total imported, total flagged as duplicates, errors.
     """
-    # --- Guard: only CSV files accepted (.xlsx cannot be parsed as CSV) ---
     filename = file.filename or ""
+    is_pdf = filename.lower().endswith(".pdf")
+    is_csv = filename.lower().endswith(".csv")
+
     if filename.lower().endswith(".xlsx"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only CSV files are supported for bulk ingestion. Please export your data as CSV (.csv) and re-upload.",
+            detail="Excel files (.xlsx) are not supported. Please export as CSV or upload a BCI PDF report.",
         )
-    if not filename.lower().endswith(".csv"):
+    if not is_csv and not is_pdf:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Only .csv files are supported for bulk upload. Please export your BCI data as CSV.",
+            detail="Only .csv and .pdf files are accepted for bulk upload.",
         )
 
     raw_bytes = await file.read()
-    try:
-        content = raw_bytes.decode("utf-8-sig")  # utf-8-sig strips BOM if present
-    except UnicodeDecodeError:
-        content = raw_bytes.decode("latin-1", errors="replace")
 
-    reader = csv.DictReader(io.StringIO(content))
+    # ------------------------------------------------------------------
+    # Build a unified list of normalised row dicts — same shape for both
+    # CSV and PDF paths so the processing loop below is file-type agnostic.
+    # ------------------------------------------------------------------
+    rows: List[Dict[str, str]] = []
 
-    # Normalise headers: strip whitespace and lowercase for flexible matching
-    if reader.fieldnames is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="CSV file appears to be empty or has no header row.",
-        )
+    if is_csv:
+        # ── CSV path ───────────────────────────────────────────────────
+        try:
+            content = raw_bytes.decode("utf-8-sig")   # utf-8-sig strips BOM
+        except UnicodeDecodeError:
+            content = raw_bytes.decode("latin-1", errors="replace")
 
+        reader = csv.DictReader(io.StringIO(content))
+        if reader.fieldnames is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="CSV file appears to be empty or has no header row.",
+            )
+        for row in reader:
+            rows.append({k.strip().lower(): (v or "").strip() for k, v in row.items() if k})
+
+    else:
+        # ── PDF path ───────────────────────────────────────────────────
+        try:
+            pdf_text_parts: List[str] = []
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                for page in pdf.pages:
+                    # Prefer table rows (structured); fall back to plain text
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            for table_row in table:
+                                if table_row:
+                                    pdf_text_parts.append(
+                                        " | ".join((cell or "").strip() for cell in table_row)
+                                    )
+                    else:
+                        page_text = page.extract_text() or ""
+                        if page_text.strip():
+                            pdf_text_parts.append(page_text)
+            pdf_text = "\n".join(pdf_text_parts)
+        except Exception as exc:
+            logger.error("PDF text extraction failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not read the PDF file: {exc}",
+            )
+
+        if not pdf_text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "The PDF appears to be empty or image-only (scanned). "
+                    "Text extraction requires a digitally created PDF — scanned documents are not supported."
+                ),
+            )
+
+        # Use GPT-4o to extract structured lead records from the PDF text
+        try:
+            extracted = await asyncio.to_thread(
+                ai_engine.extract_leads_from_pdf_text, pdf_text
+            )
+        except Exception as exc:
+            logger.error("PDF lead extraction via GPT-4o failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI could not parse leads from the PDF: {exc}",
+            )
+
+        if not extracted:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "No construction project leads could be identified in the PDF. "
+                    "Ensure the document contains BCI-style project listings."
+                ),
+            )
+
+        # Normalise GPT output to the same dict shape that the CSV path produces
+        for item in extracted:
+            rows.append({
+                "project name": str(item.get("project_name") or ""),
+                "location":     str(item.get("location")     or ""),
+                "gdv":          str(item.get("gdv")          or "0"),
+                "stage":        str(item.get("stage")        or "Planning"),
+                "type":         str(item.get("project_type") or "Commercial"),
+                "developer":    str(item.get("developer")    or ""),
+                "gfa":          str(item.get("gfa")          or ""),
+                "floors":       str(item.get("floors")       or ""),
+            })
+
+    # ------------------------------------------------------------------
+    # Unified processing loop — identical for CSV and PDF rows
+    # ------------------------------------------------------------------
     imported = 0
     flagged = 0
     errors: List[str] = []
 
-    for row_num, row in enumerate(reader, start=2):  # start=2: row 1 is header
-        # Normalise keys
-        norm = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+    for row_num, norm in enumerate(rows, start=2):  # start=2 mirrors CSV convention
 
         project_name = (
             norm.get("project name") or norm.get("projectname") or norm.get("name") or ""
@@ -726,6 +817,9 @@ async def bulk_ingest_leads(
         gdv_raw = norm.get("gdv") or norm.get("value") or norm.get("gdc") or "0"
         stage = norm.get("stage") or "Planning"
         project_type = norm.get("type") or norm.get("project type") or "Commercial"
+        developer_raw = norm.get("developer") or norm.get("developer name") or None
+        gfa_raw = norm.get("gfa") or norm.get("gross floor area") or None
+        floors_raw = norm.get("floors") or norm.get("storeys") or norm.get("stories") or None
 
         # Basic validation
         if not project_name or not location:
@@ -740,6 +834,16 @@ async def bulk_ingest_leads(
             errors.append(f"Row {row_num}: Invalid GDV value '{gdv_raw}' — defaulting to 0.")
             value_rm = 0
 
+        # Parse optional numeric fields from CSV
+        try:
+            gfa_val: Optional[int] = int(float(gfa_raw)) if gfa_raw else None
+        except (ValueError, TypeError):
+            gfa_val = None
+        try:
+            floors_val: Optional[int] = int(float(floors_raw)) if floors_raw else None
+        except (ValueError, TypeError):
+            floors_val = None
+
         # Run AI pipeline for this row
         try:
             lead_payload = LeadCreate(
@@ -748,13 +852,16 @@ async def bulk_ingest_leads(
                 value_rm=value_rm,
                 project_type=project_type[:128],
                 stage=stage[:64],
+                developer=developer_raw[:256] if developer_raw else None,
+                gfa=gfa_val,
+                floors=floors_val,
             )
 
             embedding_input = f"{project_name} {location}"
             vector = await asyncio.to_thread(ai_engine.generate_embedding, embedding_input)
 
             new_id = str(uuid.uuid4())
-            is_dup, _mid, _sc = _check_duplicate(vector, new_id)
+            is_dup, _mid, _sc = await asyncio.to_thread(_check_duplicate, vector, new_id)
 
             ai_result = await asyncio.to_thread(ai_engine.analyze_lead, lead_payload.model_dump())
             ai_analysis = AIAnalysis(
@@ -772,7 +879,10 @@ async def bulk_ingest_leads(
                 vector=vector,
                 status="Under Review" if is_dup else "New",
             )
-            await asyncio.to_thread(database.save_lead, lead_db.model_dump())
+            lead_doc = lead_db.model_dump()
+            # Stamp the ingestion date so the frontend can display it in SmartDrawer.
+            lead_doc["created_date"] = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+            await asyncio.to_thread(database.save_lead, lead_doc)
             # Vectors are now read from Cosmos DB on each check — no cache append needed.
 
             imported += 1
@@ -817,6 +927,35 @@ async def get_leads(
     Returns:
         List[LeadResponse] — enriched lead documents (vector excluded).
     """
+    # BE-B2 fix: For Sales_Rep, fetch all leads, apply RBAC in Python, then
+    # paginate — so X-Total-Count reflects BU-scoped count, not the global total.
+    if current_user.role == "Sales_Rep" and current_user.bu:
+        try:
+            all_docs = await asyncio.wait_for(
+                asyncio.to_thread(database.get_leads_page, 0, 5000),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Database query timed out.")
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+        bu_filter = current_user.bu.lower()
+        all_bu_leads: List[LeadResponse] = []
+        for doc in all_docs:
+            try:
+                lead = LeadDB(**{k: v for k, v in doc.items() if not k.startswith("_")})
+                top_bu = (lead.ai_analysis.top_match_bu if lead.ai_analysis else "").lower()
+                if bu_filter not in top_bu:
+                    continue
+                all_bu_leads.append(LeadResponse.from_lead_db(lead, raw_doc=doc))
+            except Exception as parse_exc:
+                logger.warning("Skipping malformed lead doc id='%s': %s", doc.get("id"), parse_exc)
+
+        response.headers["X-Total-Count"] = str(len(all_bu_leads))
+        return all_bu_leads[skip: skip + limit]
+
+    # Admin path: DB-level pagination with accurate total count.
     try:
         raw_leads = await asyncio.wait_for(
             asyncio.to_thread(database.get_leads_page, skip, limit),
@@ -834,7 +973,6 @@ async def get_leads(
             detail=f"Database read error: {exc}",
         )
 
-    # Attach total count header (best-effort; failure won’t break the response)
     try:
         total = await asyncio.to_thread(database.count_leads)
         response.headers["X-Total-Count"] = str(total)
@@ -845,11 +983,6 @@ async def get_leads(
     for doc in raw_leads:
         try:
             lead = LeadDB(**{k: v for k, v in doc.items() if not k.startswith("_")})
-            # RBAC: Sales_Rep only sees their BU's leads
-            if current_user.role == "Sales_Rep" and current_user.bu:
-                top_bu = lead.ai_analysis.top_match_bu if lead.ai_analysis else ""
-                if current_user.bu.lower() not in top_bu.lower():
-                    continue
             results.append(LeadResponse.from_lead_db(lead, raw_doc=doc))
         except Exception as parse_exc:
             logger.warning("Skipping malformed lead doc id='%s': %s", doc.get("id"), parse_exc)
@@ -977,7 +1110,7 @@ def get_conflicts(
 
     # Sales_Rep: resolve which lead IDs belong to their BU, then filter conflicts.
     try:
-        all_leads = database.get_all_leads()
+        all_leads = database.get_active_leads()
         bu_lower = current_user.bu.lower()
         bu_lead_ids: set = {
             doc.get("id")
@@ -1047,6 +1180,37 @@ async def resolve_conflict(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Database write error: {exc}",
         )
+
+    # Clear is_duplicate flag and update the lead status for ALL three resolution
+    # actions so the lead behaves like a normal lead after any conflict decision:
+    #
+    #   Merged    → lead stays in workbench with "Merged" badge (read-only audit)
+    #   Discarded → lead is soft-excluded from pipeline views (status = "Discarded")
+    #   Kept Both → BOTH records are now legitimate; the duplicate lead is sent back
+    #               into the active pipeline as "Under Review" for normal processing
+    dup_lead_id = updated.get("lead_id")
+    if dup_lead_id:
+        status_after: dict = {
+            "Merged":     {"is_duplicate": False, "status": "Merged"},
+            "Discarded":  {"is_duplicate": False, "status": "Discarded"},
+            "Kept Both":  {"is_duplicate": False, "status": "Under Review"},
+        }
+        lead_patch = status_after.get(payload.status)
+        if lead_patch:
+            try:
+                lead_doc = await asyncio.to_thread(database.read_lead, dup_lead_id)
+                lead_doc.update(lead_patch)
+                await asyncio.to_thread(database.save_lead, lead_doc)
+                logger.info(
+                    "Lead '%s' updated after conflict '%s' resolved as '%s' → %s",
+                    dup_lead_id, conflict_id, payload.status, lead_patch,
+                )
+            except Exception as lead_exc:
+                # Non-fatal: log and continue. The conflict is still resolved.
+                logger.warning(
+                    "Could not update lead '%s' after conflict resolution: %s",
+                    dup_lead_id, lead_exc,
+                )
 
     logger.info(
         "Conflict '%s' resolved as '%s' by '%s'",
@@ -1135,6 +1299,17 @@ async def patch_lead(
                 lead_id, field_name, old_val, new_val, current_user.email,
             )
 
+    # BE-B3 fix: whenever the status is changed away from 'Duplicate Alert'
+    # (e.g. Approve & Assign sets status='Assigned'), also clear is_duplicate
+    # so the lead no longer renders with a red duplicate highlight in the UI.
+    new_status = update_data.get("status")
+    if new_status and new_status != "Duplicate Alert" and target_doc.get("is_duplicate"):
+        update_data["is_duplicate"] = False
+        logger.info(
+            "is_duplicate cleared on lead='%s' because status changed to '%s'",
+            lead_id, new_status,
+        )
+
     target_doc.update(update_data)
 
     try:
@@ -1219,14 +1394,20 @@ def create_activity(
     The system auto-stamps the UTC timestamp and generates a UUID for the entry.
     user_name is sourced from the authenticated JWT (cannot be spoofed by the caller).
     """
+    # BE-B1 fix: generate the UUID once and inject it into the model so the
+    # object returned to the client has the same 'id' as the document saved to
+    # Cosmos DB.  Previously a second uuid4() call overwrote the doc id, making
+    # the response id and the stored id permanently out of sync.
+    activity_id = str(uuid.uuid4())
     new_activity = LeadActivity(
+        id=activity_id,
         lead_id=lead_id,
         user_name=current_user.name,
         activity_type=payload.activity_type,
         content=payload.content,
     )
     activity_doc = new_activity.model_dump()
-    activity_doc["id"] = str(uuid.uuid4())  # Cosmos DB requires a top-level 'id'
+    # 'id' is already set correctly by the model — no second uuid4() needed.
     try:
         database.save_activity(activity_doc)
     except Exception as exc:

@@ -244,3 +244,89 @@ provide the optimal BU assignment with match score, rationale, and synergy bundl
     except Exception as exc:
         logger.error("GPT-4o analysis failed: %s", exc)
         raise
+
+
+# ---------------------------------------------------------------------------
+# PDF Lead Extraction — parse unstructured PDF text into lead records
+# ---------------------------------------------------------------------------
+
+_PDF_EXTRACTION_PROMPT = """
+You are a data extraction assistant for Chin Hin Group's CRM system.
+You will receive raw text extracted from a BCI (Building & Construction Information)
+project report PDF. Your job is to identify every distinct construction project
+mentioned and return them as a JSON array.
+
+Each project object MUST have these keys (use null if information is unavailable):
+  "project_name" : string  — full name of the project
+  "location"     : string  — city / state / address
+  "gdv"          : number  — project value / GDV / GDC in RM (digits only, 0 if unknown)
+  "stage"        : string  — one of: Planning, Tender, Construction (default: "Planning")
+  "project_type" : string  — one of: High-Rise, Industrial, Commercial, Infrastructure, Renovation (default: "Commercial")
+  "developer"    : string or null — developer / main contractor name
+  "gfa"          : number or null — gross floor area in sq ft
+  "floors"       : number or null — number of floors / storeys
+
+Return ONLY a valid JSON array. No markdown, no prose outside the JSON.
+If no projects are found, return an empty array: []
+"""
+
+
+def extract_leads_from_pdf_text(pdf_text: str) -> List[Dict[str, Any]]:
+    """
+    Use GPT-4o to extract structured lead records from raw PDF text.
+
+    Args:
+        pdf_text: Plain text extracted from a PDF file (pdfplumber output).
+
+    Returns:
+        A list of dicts, each matching the BCI CSV field schema.
+        Returns an empty list if no projects are found or parsing fails.
+    """
+    if not pdf_text or not pdf_text.strip():
+        logger.warning("PDF extract: received empty text.")
+        return []
+
+    # Truncate to ~12,000 chars to stay comfortably within context limits.
+    truncated = pdf_text[:12_000]
+
+    logger.info("Calling GPT-4o to extract leads from PDF (%d chars).", len(truncated))
+
+    try:
+        completion = _openai_client.chat.completions.create(
+            model=GPT4O_DEPLOYMENT,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _PDF_EXTRACTION_PROMPT},
+                {"role": "user", "content": f"Extract all projects from this PDF text:\n\n{truncated}"},
+            ],
+            temperature=0.1,
+            max_tokens=4096,
+        )
+
+        raw: str = completion.choices[0].message.content
+        parsed = json.loads(raw)
+
+        # GPT may return {"projects": [...]} or directly [...] — normalise both.
+        if isinstance(parsed, list):
+            leads = parsed
+        elif isinstance(parsed, dict):
+            # Try common wrapper keys
+            for key in ("projects", "leads", "items", "data", "results"):
+                if key in parsed and isinstance(parsed[key], list):
+                    leads = parsed[key]
+                    break
+            else:
+                # Single project returned as object — wrap it
+                leads = [parsed] if "project_name" in parsed else []
+        else:
+            leads = []
+
+        logger.info("PDF extraction complete — %d project(s) identified.", len(leads))
+        return leads
+
+    except json.JSONDecodeError as exc:
+        logger.error("PDF extraction: GPT-4o returned invalid JSON: %s", exc)
+        return []
+    except Exception as exc:
+        logger.error("PDF extraction failed: %s", exc)
+        raise

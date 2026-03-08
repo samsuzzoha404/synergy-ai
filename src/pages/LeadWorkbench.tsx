@@ -4,7 +4,7 @@ import { LeadsTable } from "@/components/LeadsTable";
 import { LeadPipeline } from "@/components/LeadPipeline";
 import { SmartDrawer } from "@/components/SmartDrawer";
 import { type Lead } from "@/data/mockData";
-import { useLeads, PAGE_SIZE } from "@/hooks/useLeads";
+import { useLeads, useConflicts, PAGE_SIZE } from "@/hooks/useLeads";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -25,7 +25,11 @@ export default function LeadWorkbench() {
 
   const totalValue = useMemo(() => leads.reduce((s, l) => s + l.value, 0), [leads]);
   const wonLeads = useMemo(() => leads.filter((l) => l.status === "Won").length, [leads]);
-  const duplicates = useMemo(() => leads.filter((l) => l.isDuplicate).length, [leads]);
+  // Bug B7 fix: use the live conflicts queue (pending only) for the Conflicts stat
+  // instead of counting isDuplicate on the paginated leads. This correctly reflects
+  // 0 after all conflicts are resolved, and doesn't depend on which page is loaded.
+  const { data: pendingConflicts = [] } = useConflicts();
+  const duplicates = pendingConflicts.length;
 
   return (
     <div className="p-4 md:p-6 space-y-5 animate-fade-in">
@@ -108,7 +112,7 @@ export default function LeadWorkbench() {
           <span className="font-semibold text-primary">Tribal Knowledge Engine active: </span>
           <span className="text-foreground">
             {view === "list"
-              ? "Click any lead row to open the AI-powered Smart Drawer with cross-sell recommendations. Duplicate alerts redirect to Conflict Resolution."
+              ? "Click any lead row to open the AI-powered Smart Drawer with cross-sell recommendations. Active duplicate leads (highlighted red) redirect to Conflict Resolution; all other leads open the Smart Drawer."
               : "Drag cards between columns to move a lead through the pipeline. Click any card to open the Smart Drawer."}
           </span>
         </div>

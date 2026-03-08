@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, Filter, SlidersHorizontal, ChevronDown, ArrowUpDown, X } from "lucide-react";
+import { Search, SlidersHorizontal, ArrowUpDown, X } from "lucide-react";
 import { Lead, LeadStatus, LeadStage } from "@/data/mockData";
 import { MatchScoreBadge, StatusBadge } from "@/components/StatusBadge";
 import { SmartDrawer } from "@/components/SmartDrawer";
@@ -16,7 +16,7 @@ function formatCurrency(value: number) {
 
 type SortKey = "projectName" | "value" | "status" | null;
 
-const STATUS_OPTIONS: LeadStatus[] = ["New", "In Review", "Assigned", "Duplicate Alert", "Won", "Lost"];
+const STATUS_OPTIONS: LeadStatus[] = ["New", "In Review", "Under Review", "Assigned", "Duplicate Alert", "Won", "Lost", "Merged", "Discarded"];
 const STAGE_OPTIONS: LeadStage[] = ["Planning", "Tender", "Construction", "Completed"];
 
 interface LeadsTableProps {
@@ -35,6 +35,13 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [filterOpen, setFilterOpen] = useState(false);
   const navigate = useNavigate();
+
+  // LW-B2 fix: sync externalFilter prop into local state whenever the parent
+  // changes it (e.g., navigating from Dashboard with a pre-set status filter).
+  // useState only reads the initial prop value, so a useEffect is required.
+  useEffect(() => {
+    setStatusFilter(externalFilter || "");
+  }, [externalFilter]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -236,7 +243,10 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
                       lead.isDuplicate && "bg-destructive/5"
                     )}
                     onClick={() => {
-                      if (lead.isDuplicate) navigate("/conflicts");
+                      // Only redirect to conflict resolution for ACTIVE (unresolved) duplicates.
+                      // Merged / Discarded leads have isDuplicate=false after resolution, so
+                      // they open the SmartDrawer like any normal lead.
+                      if (lead.isDuplicate && lead.status === "Duplicate Alert") navigate("/conflicts");
                       else setSelectedLead(lead);
                     }}
                   >
@@ -256,19 +266,24 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
                       <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded-full font-medium">{lead.stage}</span>
                     </td>
                     <td className="px-5 py-3.5">
-                      {lead.isDuplicate ? (
-                        <span className="flex items-center gap-1.5 text-xs text-destructive font-semibold">
-                          <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse" />
-                          Duplicate
-                        </span>
-                      ) : (
-                        <MatchScoreBadge score={lead.matches[0]?.score ?? 0} bu={lead.matches[0]?.bu ?? ""} size="sm" />
-                      )}
+                      {/* Always show AI match score and BU — even for duplicate-flagged leads.
+                          A small indicator marks unresolved conflicts without hiding the AI data. */}
+                      <div className="space-y-1">
+                        {lead.isDuplicate && lead.status === "Duplicate Alert" && (
+                          <span className="flex items-center gap-1 text-[10px] text-destructive font-semibold leading-none">
+                            <span className="w-1.5 h-1.5 rounded-full bg-destructive animate-pulse flex-shrink-0" />
+                            Conflict pending
+                          </span>
+                        )}
+                        <MatchScoreBadge
+                          score={lead.matches[0]?.score ?? 0}
+                          bu={lead.matches[0]?.bu ?? "—"}
+                          size="sm"
+                        />
+                      </div>
                     </td>
                     <td className="px-5 py-3.5 hidden xl:table-cell">
-                      {lead.isDuplicate ? (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      ) : (
+                      {lead.crossSell.length > 0 ? (
                         <div className="flex flex-wrap gap-1 max-w-[200px]">
                           {lead.crossSell.slice(0, 3).map((cs, i) => {
                             const colors = [
@@ -288,6 +303,8 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
                             <span className="text-[10px] text-muted-foreground font-medium">+{lead.crossSell.length - 3}</span>
                           )}
                         </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </td>
                     <td className="px-5 py-3.5">
@@ -300,15 +317,14 @@ export function LeadsTable({ filterStatus: externalFilter, leads: propLeads }: L
           </table>
         </div>
 
-        {/* Table Footer */}
-        <div className="px-5 py-3 border-t border-border flex items-center justify-between bg-muted/20">
+        {/* Table Footer — total count summary only; pagination is handled by the parent page */}
+        <div className="px-5 py-3 border-t border-border bg-muted/20">
           <div className="text-xs text-muted-foreground">
-            Showing <span className="font-semibold text-foreground">{filtered.length}</span> of <span className="font-semibold text-foreground">{leads.length}</span> leads
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="h-7 text-xs" disabled>← Prev</Button>
-            <span className="text-xs text-muted-foreground px-2">Page 1 of 1</span>
-            <Button variant="outline" size="sm" className="h-7 text-xs" disabled>Next →</Button>
+            Showing <span className="font-semibold text-foreground">{filtered.length}</span>
+            {filtered.length !== leads.length && (
+              <> (filtered) of <span className="font-semibold text-foreground">{leads.length}</span> on this page</>
+            )}
+            {filtered.length === leads.length && <> leads on this page</>}
           </div>
         </div>
       </div>

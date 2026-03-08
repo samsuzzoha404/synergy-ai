@@ -1,37 +1,51 @@
 [
   {
-    "bu": "Stucken",
+    "bu": "Stucken AAC",
     "contact_name": "Azrul Hamid",
     "contact_title": "Sales Manager",
     "phone": "+60 12-388 4521",
     "email": "azrul.hamid@stucken.com.my"
   },
   {
-    "bu": "Ajiya",
+    "bu": "AJIYA METAL / GLASS",
     "contact_name": "Priya Chandran",
     "contact_title": "Sales Manager",
     "phone": "+60 12-771 2034",
     "email": "priya@ajiya.com.my"
   },
   {
-    "bu": "G-Cast",
+    "bu": "G-CAST",
     "contact_name": "Wong Khai Seng",
     "contact_title": "Sales Manager",
     "phone": "+60 16-223 9810",
     "email": "ks.wong@gcast.com.my"
   },
   {
-    "bu": "Signature",
+    "bu": "SIGNATURE ALLIANCE",
     "contact_name": "Nurul Aina",
     "contact_title": "Sales Manager",
     "phone": "+60 11-902 5566",
     "email": "nurul@signature.com.my"
   },
   {
-    "bu": "Fiamma",
+    "bu": "SIGNATURE KITCHEN",
+    "contact_name": "Hafizuddin Razak",
+    "contact_title": "Sales Manager",
+    "phone": "+60 12-650 3391",
+    "email": "hafiz@signaturekitchen.com.my"
+  },
+  {
+    "bu": "Fiamma Holding",
     "contact_name": "Ravi Kumar",
     "contact_title": "Sales Manager",
     "phone": "+60 17-554 8890",
     "email": "ravi@fiamma.com.my"
+  },
+  {
+    "bu": "PPG HING",
+    "contact_name": "Lee Choon Wai",
+    "contact_title": "Sales Manager",
+    "phone": "+60 16-778 2240",
+    "email": "cw.lee@ppghing.com.my"
   }
 ]

@@ -59,7 +59,7 @@ export default function ConflictResolution() {
   const [isActioning, setIsActioning] = useState(false);
 
   // Primary data sources: live API conflicts + leads cache
-  const { data: apiConflicts = [], isLoading } = useConflicts();
+  const { data: apiConflicts = [], isLoading, isSuccess: conflictsLoaded } = useConflicts();
   const { data: allLeadsData = null } = useLeads();
   const allLeads = allLeadsData?.leads ?? [];
   const { mutateAsync: resolveConflict } = useResolveConflict();
@@ -77,17 +77,33 @@ export default function ConflictResolution() {
     ? allLeads.find((l) => l.id === activeConflict.matched_lead_id) ?? null
     : null;
 
-  // Determine which lead data to show in the comparison UI:
-  // Priority: real API new lead → any duplicate-flagged lead from cache → null
-  const duplicateLead = apiNewLead ?? allLeads.find((l) => l.isDuplicate) ?? null;
+  // Determine which lead data to show in the comparison UI.
+  //
+  // BUG FIX — stale conflict after resolution:
+  // When the backend successfully returns [] for /api/conflicts (conflictsLoaded=true),
+  // it means there are genuinely no pending conflicts. We must NOT fall back to the
+  // leads cache's isDuplicate field because the leads cache may still be stale
+  // (its refetch is triggered in parallel but completes slightly later than the
+  // conflicts refetch). Falling back to an isDuplicate lead would show the conflict
+  // UI again immediately after the user resolves it — the reported bug.
+  //
+  // The isDuplicate-lead fallback is only meaningful in pure offline/demo mode:
+  // i.e., before we've received a successful response from the conflicts endpoint.
+  const duplicateLead = activeConflict
+    ? apiNewLead          // live mode: exact match only; null → simplified ID view (render path 4)
+    : conflictsLoaded
+      ? null              // backend confirmed no pending conflicts → never show stale cache lead
+      : allLeads.find((l) => l.isDuplicate) ?? null;  // pre-fetch / offline demo fallback
 
-  // For the existing/matched record: try the matched lead from cache,
-  // then fall back to any non-duplicate lead that isn't the same as duplicateLead.
-  const existingFromCache = apiExistingLead ?? (
-    duplicateLead
-      ? allLeads.find((l) => !l.isDuplicate && l.id !== duplicateLead.id) ?? null
-      : null
-  );
+  // Bug B2 fix: same principle for the existing/matched record.
+  // In live mode, use only the exact matched lead from cache; never a random fallback.
+  const existingFromCache = activeConflict
+    ? apiExistingLead   // live mode: exact match (null is handled gracefully below)
+    : (
+        duplicateLead
+          ? allLeads.find((l) => !l.isDuplicate && l.id !== duplicateLead.id) ?? null
+          : null
+      );  // demo mode: first non-dup that isn't the dup lead
   const existing = existingFromCache
     ? {
         id: existingFromCache.id,
@@ -101,8 +117,14 @@ export default function ConflictResolution() {
       }
     : null;
 
-  // Total conflict count from real API only
-  const totalConflicts = apiConflicts.length > 0 ? apiConflicts.length : (duplicateLead && !resolved ? 1 : 0);
+  // Total conflict count from real API only.
+  // BUG FIX: once conflictsLoaded=true and the array is empty, always show 0.
+  // Never inflate the count from a stale isDuplicate lead in the leads cache.
+  const totalConflicts = conflictsLoaded
+    ? apiConflicts.length
+    : apiConflicts.length > 0
+      ? apiConflicts.length
+      : (duplicateLead && !resolved ? 1 : 0);
 
   const handleAction = async (action: "merge" | "discard" | "keep") => {
     const statusMap: Record<typeof action, string> = {
@@ -124,14 +146,21 @@ export default function ConflictResolution() {
           conflictId: activeConflict.id,
           payload: { status: statusMap[action] },
         });
+        // BUG FIX: set resolved=true so the success animation plays.
+        // Previously this was skipped to rely on cache invalidation, but the leads
+        // cache refreshes slightly later than the conflicts cache, causing the
+        // conflict UI to briefly re-render from stale isDuplicate data. Showing
+        // the Resolved screen first gives the caches time to settle, and correctly
+        // communicates completion to the user without the ghost re-render.
+        toast({ title: toastMessages[action].title, description: toastMessages[action].desc, duration: 4000 });
+        setResolved(true);
       } else {
-        // --- Fallback demo path: mock-only mode (no backend conflict found) ---
-        // No API call needed; the cache update is handled inside useResolveConflict.onSuccess
-        // For the pure-mock fallback we just simulate the optimistic update.
+        // --- Fallback demo path: no backend conflict record exists (pure mock mode).
+        // No API call is made, so the query cache won't change on refetch.
+        // We use `resolved` local state to show the success screen instead.
+        toast({ title: toastMessages[action].title, description: toastMessages[action].desc, duration: 4000 });
+        setResolved(true);
       }
-
-      toast({ title: toastMessages[action].title, description: toastMessages[action].desc, duration: 4000 });
-      setResolved(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       toast({
@@ -179,7 +208,7 @@ export default function ConflictResolution() {
         <h2 className="text-lg font-bold text-foreground">Conflict Resolved!</h2>
         <p className="text-sm text-muted-foreground mt-1">No more pending conflicts to review.</p>
         <Button className="mt-4 gradient-primary text-white" onClick={() => setResolved(false)}>
-          Reset Demo
+          Check for More
         </Button>
       </div>
     );

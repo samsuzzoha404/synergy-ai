@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import {
   Upload, FileText, CheckCircle2, X, Plus, Smartphone,
@@ -24,7 +24,7 @@ interface FormData {
 }
 
 const PIPELINE_STEPS = [
-  { icon: Upload, label: "File Upload", desc: "CSV parsed" },
+  { icon: Upload, label: "File Upload", desc: "CSV / PDF parsed" },
   { icon: Cpu, label: "AI Scoring", desc: "BU match computed" },
   { icon: Database, label: "Stored", desc: "Lead saved to DB" },
   { icon: BarChart3, label: "Dashboard", desc: "KPIs updated" },
@@ -47,18 +47,37 @@ export default function DataIngestion() {
   const { mutateAsync: createLead } = useCreateLead();
   const { mutateAsync: uploadCSV } = useBulkUpload();
 
+  // Track animation timeouts so we can cancel them on failure or unmount.
+  const animationTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  // Clear any pending animation timers when the component unmounts.
+  useEffect(() => {
+    return () => {
+      animationTimeoutsRef.current.forEach(clearTimeout);
+    };
+  }, []);
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
     const file = e.dataTransfer.files[0];
-    if (file && file.name.endsWith(".csv")) {
+    const isCSV = file?.name.toLowerCase().endsWith(".csv");
+    const isPDF = file?.name.toLowerCase().endsWith(".pdf");
+    if (file && (isCSV || isPDF)) {
+      if (file.size > 50 * 1024 * 1024) {
+        toast({ title: "File too large", description: "Please upload a file under 50\u00a0MB.", variant: "destructive" });
+        return;
+      }
       processFile(file);
     } else {
-      toast({ title: "Unsupported file type", description: "Only .csv files are supported for bulk ingestion.", variant: "destructive" });
+      toast({ title: "Unsupported file type", description: "Only .csv and .pdf files are accepted for bulk ingestion.", variant: "destructive" });
     }
   };
 
   const processFile = (file: File) => {
+    // Cancel any still-running animation timers from a previous upload.
+    animationTimeoutsRef.current.forEach(clearTimeout);
+
     setUploadedFile(file);
     setUploading(true);
     setUploadSuccess(false);
@@ -69,13 +88,16 @@ export default function DataIngestion() {
 
     // Animate through the pipeline steps regardless of API speed for good UX
     const delays = [0, 600, 1200, 1800];
-    delays.forEach((delay, i) => {
-      setTimeout(() => setActiveStep(i), delay);
-    });
+    animationTimeoutsRef.current = delays.map((delay, i) =>
+      setTimeout(() => setActiveStep(i), delay)
+    );
 
     // Call the real backend bulk ingest API concurrently with the animation
     uploadCSV(file)
       .then((result) => {
+        // Clear animation timers — upload finished, no more step-advancing needed.
+        animationTimeoutsRef.current.forEach(clearTimeout);
+        animationTimeoutsRef.current = [];
         setImportedCount(result.imported);
         setFlaggedCount(result.flagged);
         setUploadErrors(result.errors);
@@ -88,8 +110,12 @@ export default function DataIngestion() {
         });
       })
       .catch((err: Error) => {
+        // Cancel the animation so a failed upload doesn't show completed pipeline steps.
+        animationTimeoutsRef.current.forEach(clearTimeout);
+        animationTimeoutsRef.current = [];
         setUploading(false);
         setUploadSuccess(false);
+        setActiveStep(0);
         toast({
           title: "❌ Upload Failed",
           description: err.message,
@@ -98,7 +124,6 @@ export default function DataIngestion() {
         });
         // Allow user to try again
         setUploadedFile(null);
-        setActiveStep(0);
       });
   };
 
@@ -140,7 +165,7 @@ export default function DataIngestion() {
           Data Ingestion
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Import BCI project data via CSV or enter leads manually for AI scoring.
+          Import BCI project data via CSV or PDF, or enter leads manually for AI scoring.
         </p>
       </div>
 
@@ -185,8 +210,8 @@ export default function DataIngestion() {
                 <FileText className="w-4 h-4 text-primary" />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-foreground">BCI CSV Upload</h2>
-                <p className="text-xs text-muted-foreground">Drag & drop or click to browse</p>
+                <h2 className="text-sm font-semibold text-foreground">BCI File Upload</h2>
+                <p className="text-xs text-muted-foreground">CSV or PDF · Drag & drop or click to browse</p>
               </div>
             </div>
 
@@ -211,9 +236,18 @@ export default function DataIngestion() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".csv"
+                    accept=".csv,.pdf"
                     className="hidden"
-                    onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0])}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      if (f.size > 50 * 1024 * 1024) {
+                        toast({ title: "File too large", description: "Please upload a file under 50\u00a0MB.", variant: "destructive" });
+                        e.target.value = "";
+                        return;
+                      }
+                      processFile(f);
+                    }}
                   />
                   <div className={cn(
                     "w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-all",
@@ -224,7 +258,7 @@ export default function DataIngestion() {
                   <p className="text-sm font-bold text-foreground mb-1">
                     {dragOver ? "Release to upload" : "Drag & drop your BCI export here"}
                   </p>
-                  <p className="text-xs text-muted-foreground mb-4">CSV files only · Max 50MB</p>
+                  <p className="text-xs text-muted-foreground mb-4">CSV or PDF &middot; Max 50MB</p>
                   <Button variant="outline" size="sm" className="pointer-events-none">
                     Browse Files
                   </Button>
@@ -245,7 +279,11 @@ export default function DataIngestion() {
                         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                       </div>
                       <p className="text-sm font-bold text-foreground">{uploadedFile.name}</p>
-                      <p className="text-xs text-muted-foreground mt-1.5">Running AI scoring pipeline...</p>
+                      <p className="text-xs text-muted-foreground mt-1.5">
+                        {uploadedFile.name.toLowerCase().endsWith(".pdf")
+                          ? "GPT-4o reading PDF & scoring leads..."
+                          : "Running AI scoring pipeline..."}
+                      </p>
                       <div className="flex gap-1 mt-4">
                         {[0, 1, 2].map((i) => (
                           <div key={i} className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce" style={{ animationDelay: `${i * 0.2}s` }} />
@@ -286,7 +324,7 @@ export default function DataIngestion() {
                         variant="outline"
                         size="sm"
                         className="mt-4 bg-card"
-                        onClick={() => { setUploadedFile(null); setUploadSuccess(false); setActiveStep(0); setImportedCount(null); setFlaggedCount(null); setUploadErrors([]); }}
+                        onClick={() => { animationTimeoutsRef.current.forEach(clearTimeout); animationTimeoutsRef.current = []; setUploadedFile(null); setUploadSuccess(false); setActiveStep(0); setImportedCount(null); setFlaggedCount(null); setUploadErrors([]); }}
                       >
                         <X className="w-3.5 h-3.5 mr-1.5" />
                         Upload Another
@@ -299,13 +337,20 @@ export default function DataIngestion() {
 
             {/* Supported Format */}
             <div className="mt-4 p-3 bg-muted/50 rounded-xl border border-border">
-              <p className="text-xs font-semibold text-muted-foreground mb-2">Expected CSV columns:</p>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs bg-primary-light text-primary border border-primary/20 rounded px-1.5 py-0.5 font-semibold">CSV</span>
+                <p className="text-xs font-semibold text-muted-foreground">Expected columns (case-insensitive):</p>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-3">
                 {["Project Name", "Location", "GDV", "Stage", "Developer", "GFA", "Type"].map((col) => (
                   <span key={col} className="text-xs bg-card border border-border rounded-md px-2 py-0.5 text-foreground font-mono">
                     {col}
                   </span>
                 ))}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs bg-destructive/10 text-destructive border border-destructive/20 rounded px-1.5 py-0.5 font-semibold">PDF</span>
+                <p className="text-xs text-muted-foreground">GPT-4o auto-extracts all project leads from any BCI report PDF.</p>
               </div>
             </div>
           </div>
