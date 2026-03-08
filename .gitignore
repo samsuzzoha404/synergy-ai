@@ -55,3 +55,4 @@ coverage/
 
 # TypeScript
 *.tsbuildinfo
+.vercel
